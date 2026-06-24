@@ -1,0 +1,42 @@
+{
+  "name": "step-training-app",
+  "version": "0.1.0",
+  "private": true,
+  "description": "問題.mdをAIでSTEP教材に変換し、スクリーンショットをAI判定するSTEP進行研修アプリ",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "jest",
+    "test:coverage": "jest --coverage",
+    "test:integration": "jest --config test/integration/jest.config.js"
+  },
+  "dependencies": {
+    "@google/generative-ai": "^0.21.0",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "multer": "^2.0.1"
+  },
+  "devDependencies": {
+    "jest": "^30.4.2",
+    "jest-environment-jsdom": "^30.4.1",
+    "supertest": "^7.2.2"
+  },
+  "jest": {
+    "projects": [
+      {
+        "displayName": "server",
+        "testEnvironment": "node",
+        "testMatch": ["<rootDir>/test/server*.test.js"]
+      },
+      {
+        "displayName": "frontend",
+        "testEnvironment": "jsdom",
+        "testMatch": ["<rootDir>/test/app.test.js"]
+      }
+    ],
+    "collectCoverageFrom": [
+      "server.js",
+      "public/app.js"
+    ]
+  }
+}

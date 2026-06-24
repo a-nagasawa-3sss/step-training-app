@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>AWS 実践研修 デモ</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>
+    <h1>クラウド研修 STEP進行デモ</h1>
+    <p id="header-subtitle"></p>
+  </header>
+
+  <!-- ライブラリ（問題一覧）画面 -->
+  <main id="library-screen">
+    <section class="library-panel">
+      <h2>問題一覧</h2>
+      <div id="course-list"></div>
+    </section>
+
+    <section class="library-panel">
+      <h2 id="upload-heading">新しい問題(.md)を読み込む</h2>
+      <p id="upload-target-note"></p>
+      <input type="file" id="md-file-input" accept=".md,text/markdown" />
+      <button id="generate-button" disabled>Geminiでこの問題を生成する</button>
+      <button id="cancel-regenerate-button" style="display:none;">キャンセル</button>
+      <div id="generate-status"></div>
+    </section>
+  </main>
+
+  <!-- コース（STEP進行）画面 -->
+  <main id="course-screen" style="display:none;">
+    <button id="back-to-library-button">← 問題一覧へ戻る</button>
+
+    <div class="course-body">
+      <nav id="step-nav"></nav>
+
+      <section id="step-panel">
+        <h2 id="step-title"></h2>
+
+        <div class="block">
+          <h3>タスクの GOAL</h3>
+          <div id="step-goal"></div>
+        </div>
+
+        <div class="block" id="step-detail"></div>
+
+        <div class="block checkpoint">
+          <h3>チェックポイント</h3>
+          <p id="checkpoint-instruction"></p>
+          <ul id="checkpoint-criteria"></ul>
+
+          <input type="file" id="screenshot-input" accept="image/*" multiple />
+
+          <div id="paste-area" tabindex="0">
+            ここをクリックしてフォーカスした状態で <b>Ctrl+V</b> を押すと、クリップボードの画像を貼り付けられます
+          </div>
+
+          <div id="preview"></div>
+
+          <button id="judge-button">スクリーンショットをAIに判定してもらう</button>
+
+          <div id="judge-result"></div>
+        </div>
+
+        <div class="nav-buttons">
+          <button id="prev-button">← 前のタスクへ</button>
+          <button id="next-button">次のタスクへ →</button>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

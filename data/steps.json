@@ -1,0 +1,92 @@
+{
+  "title": "クラウドインフラエンジニア (AWS) 実践研修 初級編",
+  "subtitle": "高可用な Web サイト構築",
+  "steps": [
+    {
+      "id": 1,
+      "title": "タスク1: VPC リソースの作成",
+      "goalHtml": "<ul><li>必要な VPC リソースを作成する</li><li>サービスを起動し、確認を行った後は、必ず都度サービスを停止させる</li></ul>",
+      "detailHtml": "<h3>タスクの流れ</h3><ol><li>VPC とサブネットを作成する</li><li>EC2 用のセキュリティグループを作成する</li><li>RDS 用のセキュリティグループを作成する</li><li>RDS 用のサブネットグループを作成する</li></ol><h3>タスクの要件</h3><p><b>VPC</b>：名称 <code>wordpress-vpc</code> / CIDR <code>10.0.0.0/16</code> / リージョン <code>ap-northeast-1</code></p><p><b>サブネット</b>：Public 1a(<code>10.0.1.0/24</code>) / Public 1c(<code>10.0.2.0/24</code>) / Private 1a(<code>10.0.3.0/24</code>) / Private 1c(<code>10.0.4.0/24</code>)。Public はIGWへの経路あり、Privateはなし。</p><p><b>セキュリティグループ</b>：<code>ec2-sg</code>(HTTP 80を0.0.0.0/0、SSH 22) / <code>rds-sg</code>(MySQL 3306をec2-sgから)</p><p><b>RDS用サブネットグループ</b>：<code>wordpress-db-subnet</code>（2つのプライベートサブネット）</p>",
+      "checkpoint": {
+        "instruction": "VPC一覧・サブネット一覧・セキュリティグループ一覧・DBサブネットグループ画面のスクリーンショットをアップロードしてください（複数枚アップロード可）。",
+        "criteria": [
+          "VPC名称が wordpress-vpc であり、CIDRブロックが 10.0.0.0/16 になっている",
+          "パブリックサブネットが2つ(10.0.1.0/24, 10.0.2.0/24)、プライベートサブネットが2つ(10.0.3.0/24, 10.0.4.0/24)存在する",
+          "セキュリティグループ ec2-sg と rds-sg が作成されている",
+          "RDS用サブネットグループ wordpress-db-subnet が作成されている（画面に含まれる場合）"
+        ]
+      }
+    },
+    {
+      "id": 2,
+      "title": "タスク2: EC2 と RDS の作成",
+      "goalHtml": "<ul><li>RDS インスタンスと EC2 インスタンスを作成して WordPress を構築する</li><li>サービスを起動し、確認を行った後は、必ず都度サービスを停止させる</li></ul>",
+      "detailHtml": "<h3>タスクの流れ</h3><ol><li>RDS インスタンスを作成する</li><li>EC2 インスタンスを作成する</li><li>WordPress を構築する</li></ol><h3>タスクの要件</h3><p><b>RDS</b>：MySQL 8.0.41 / db.t3.micro / 識別子 <code>wordpress-rds</code> / VPC <code>wordpress-vpc</code> / サブネットグループ <code>wordpress-db-subnet</code> / SG <code>rds-sg</code> / 初期DB名 <code>wordpress</code></p><p><b>EC2</b>：名前 <code>WordPress 01</code> / Amazon Linux 2023 / t3.micro / AZ ap-northeast-1a / SG <code>ec2-sg</code></p><p><b>WordPress</b>：EC2上にApache+PHP+WordPressを構築し、記事を1件投稿して表示できることを確認する。</p>",
+      "checkpoint": {
+        "instruction": "RDSインスタンス詳細画面、EC2インスタンス詳細画面、WordPressで投稿を公開・表示した画面のスクリーンショットをアップロードしてください（複数枚アップロード可）。",
+        "criteria": [
+          "RDSインスタンス識別子が wordpress-rds、エンジンがMySQLになっている",
+          "EC2インスタンス名が WordPress 01、状態が running になっている",
+          "WordPressの管理画面または公開済み記事が表示されている（タイトル・本文・画像が確認できる）"
+        ]
+      }
+    },
+    {
+      "id": 3,
+      "title": "タスク3: S3 の作成と IAM ロールの利用",
+      "goalHtml": "<ul><li>S3 バケットを作成して EC2 インスタンスから利用可能にする</li><li>サービスを起動し、確認を行った後は、必ず都度サービスを停止させる</li></ul>",
+      "detailHtml": "<h3>タスクの流れ</h3><ol><li>S3 バケットを作成する</li><li>IAM ロールを作成し EC2 インスタンスへ割り当てる</li><li>S3 を利用するためのプラグインを WordPress へ追加する</li></ol><h3>タスクの要件</h3><p><b>S3</b>：バケット名は一意な文字列（例 <code>wordpress-xxxxxxxxx</code>）、リージョン ap-northeast-1</p><p><b>IAMロール</b>：<code>ec2-wordpress-role</code>（ポリシー <code>AmazonS3FullAccess</code>）を <code>WordPress 01</code> に割り当て</p><p><b>WordPress</b>：WP Offload Media Lite プラグインを有効化し、S3バケットを接続済み</p>",
+      "checkpoint": {
+        "instruction": "S3バケット詳細画面、EC2インスタンスのIAMロール設定、WordPressに投稿した記事内の画像URLがS3であることが分かる画面のスクリーンショットをアップロードしてください（複数枚アップロード可）。",
+        "criteria": [
+          "S3バケットが作成されている",
+          "EC2インスタンス(WordPress 01)に ec2-wordpress-role がアタッチされている",
+          "WordPress記事内の画像URLがS3バケットのURLになっている"
+        ]
+      }
+    },
+    {
+      "id": 4,
+      "title": "タスク4: ELB の作成と環境の冗長化",
+      "goalHtml": "<ul><li>ELB や AMI を利用してマルチ AZ 環境を構築する</li><li>サービスを起動し、確認を行った後は、必ず都度サービスを停止させる</li></ul>",
+      "detailHtml": "<h3>タスクの流れ</h3><ol><li>ALB を作成する</li><li>カスタム AMI を作成して EC2 を複製する</li><li>RDS をマルチ AZ 化する</li></ol><h3>タスクの要件</h3><p><b>ALB</b>：名称 <code>wordpress-alb</code> / SG <code>elb-sg</code>(HTTP 80) / ターゲットグループ <code>wordpress-tg</code>（ヘルスチェックパス <code>/wp-login.php</code>）</p><p><b>EC2複製</b>：<code>WordPress 01</code> のAMIから <code>WordPress 02</code>(AZ ap-northeast-1c) を作成し、ターゲットグループへ登録</p><p><b>RDS</b>：<code>wordpress-rds</code> をマルチAZ化（スタンバイ作成）</p>",
+      "checkpoint": {
+        "instruction": "ALB詳細画面、ターゲットグループのヘルスチェック状況（2台healthy）、RDSのマルチAZ設定画面のスクリーンショットをアップロードしてください（複数枚アップロード可）。",
+        "criteria": [
+          "ALB wordpress-alb が作成されている",
+          "ターゲットグループ wordpress-tg に WordPress 01 と WordPress 02 が登録され、両方healthyになっている",
+          "RDS wordpress-rds がマルチAZ配置になっている"
+        ]
+      }
+    },
+    {
+      "id": 5,
+      "title": "タスク5: Systems Manager と CloudWatch の利用",
+      "goalHtml": "<ul><li>CloudWatch の利用設定を行ってカスタムメトリクスやログを監視する</li><li>サービスを起動し、確認を行った後は、必ず都度サービスを停止させる</li></ul>",
+      "detailHtml": "<h3>タスクの流れ</h3><ol><li>IAM ロールへ IAM ポリシーを追加する</li><li>Systems Manager を利用した CloudWatch エージェントの設定と起動</li><li>CloudWatch のメトリクスを利用したアラートを設定する</li><li>CloudWatch Logs を確認する</li></ol><h3>タスクの要件</h3><p><b>IAMポリシー追加</b>：<code>ec2-wordpress-role</code> に <code>CloudWatchAgentServerPolicy</code> と <code>AmazonSSMManagedInstanceCore</code></p><p><b>CloudWatchエージェント</b>：2台のEC2でカスタムメトリクス(CWAgent)が取得できている</p><p><b>アラーム</b>：WordPress 01のCPU使用率50%超でメール通知するアラームを設定し、発報を確認</p><p><b>Logs</b>：ロググループにログストリームがあり、Logs InsightsでURL Top10を抽出できる</p>",
+      "checkpoint": {
+        "instruction": "CloudWatchのCWAgentカスタムメトリクス画面、CPUアラームの設定・発報状態画面、CloudWatch Logs Insightsのクエリ結果画面のスクリーンショットをアップロードしてください（複数枚アップロード可）。",
+        "criteria": [
+          "CWAgentのカスタムメトリクスが取得されている",
+          "CPU使用率50%超で発報するアラームが設定されている（ALARM状態などが確認できる）",
+          "CloudWatch LogsでHTTPアクセスログのロググループ/ログストリームが存在する"
+        ]
+      }
+    },
+    {
+      "id": 6,
+      "title": "タスク6: IaC によるリソースの作成",
+      "goalHtml": "<ul><li>CloudFormation テンプレートおよび Terraform を利用してリソースを作成する</li><li>サービスを起動し、確認を行った後は、必ず都度サービスを停止させる</li></ul>",
+      "detailHtml": "<h3>タスクの流れ</h3><p>ネットワーク／アプリケーション／データベースの3レイヤーを CloudFormation と Terraform でそれぞれ記述する。</p><h3>タスクの要件（概要）</h3><p><b>ネットワーク</b>：VPC <code>xxx-vpc</code>(10.0.0.0/16)、サブネット4つ、IGW、SG(<code>ec2-xxx-sg</code> / <code>rds-xxx-sg</code>)</p><p><b>アプリケーション</b>：IAMロール <code>ec2-xxx-role</code>、EC2インスタンス <code>ec2-xxx-instance</code>（nginx起動）</p><p><b>データベース</b>：DBサブネットグループ <code>xxx-db-subnetgroup</code>、RDS <code>xxx-rds</code>(MySQL 8.0.41)</p><p>CloudFormationは <code>cfn-</code>、Terraformは <code>tf-</code> 接頭辞で命名する。</p>",
+      "checkpoint": {
+        "instruction": "CloudFormationスタックの「リソース」タブ、またはTerraform apply実行後のコンソール出力・AWSリソース一覧のスクリーンショットをアップロードしてください（複数枚アップロード可）。",
+        "criteria": [
+          "VPC・サブネット・セキュリティグループがコードから作成されている",
+          "EC2インスタンスが作成され稼働している",
+          "RDSインスタンスが作成されている",
+          "リソース名にcfn-またはtf-の接頭辞が付与されている"
+        ]
+      }
+    }
+  ]
+}
