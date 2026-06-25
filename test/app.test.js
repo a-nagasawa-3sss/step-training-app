@@ -425,6 +425,21 @@ describe("STEP進行画面", () => {
     expect(document.getElementById("step-title").textContent).toBe("タスク1");
   });
 
+  it("次へ/前へボタンでSTEPを移動した際にページ最上部へスクロールする", async () => {
+    setupFetchMock(buildStepCourseRoutes());
+    await openCourse1();
+
+    const scrollToSpy = jest.spyOn(window, "scrollTo").mockImplementation(() => {});
+
+    document.getElementById("next-button").click();
+    expect(scrollToSpy).toHaveBeenCalledWith(0, 0);
+
+    document.getElementById("prev-button").click();
+    expect(scrollToSpy).toHaveBeenCalledWith(0, 0);
+
+    scrollToSpy.mockRestore();
+  });
+
   it("ナビゲーションボタンクリックでも該当STEPに移動する", async () => {
     setupFetchMock(buildStepCourseRoutes());
     await openCourse1();

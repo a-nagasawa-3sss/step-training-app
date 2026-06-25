@@ -123,8 +123,16 @@ main {
 }
 
 .block { margin-bottom: 20px; }
+.block:not([id]):not(.checkpoint) {
+  border: 1px solid #d5dbe2;
+  border-radius: 8px;
+  background: #f4f6f8;
+  padding: 16px;
+}
 .block h3 { margin: 0 0 8px; font-size: 15px; color: #232f3e; }
-.block table { border-collapse: collapse; margin: 8px 0; }
+.block table { border-collapse: collapse; margin: 8px 0; border: 1px solid #c7ccd2; }
+.block table th, .block table td { border: 1px solid #c7ccd2; padding: 6px 10px; }
+.block table th { background: #eef1f4; }
 .block code { background: #eef1f4; padding: 1px 4px; border-radius: 4px; }
 .block pre {
   background: #1d2630;
@@ -145,6 +153,33 @@ main {
 #checkpoint-criteria { list-style: none; padding-left: 0; }
 #checkpoint-criteria li { margin: 4px 0; }
 #checkpoint-criteria label { display: flex; align-items: flex-start; gap: 6px; cursor: default; }
+#checkpoint-criteria input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  position: relative;
+  width: 16px;
+  height: 16px;
+  margin: 2px 0 0;
+  border: 1px solid #c7b08a;
+  border-radius: 3px;
+  background: #fff;
+  flex-shrink: 0;
+}
+#checkpoint-criteria input[type="checkbox"]:checked {
+  background: #f4b8b8;
+  border-color: #e08a8a;
+}
+#checkpoint-criteria input[type="checkbox"]:checked::after {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 1px;
+  width: 4px;
+  height: 8px;
+  border: solid #a13b3b;
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
 
 #paste-area {
   margin-top: 10px;

@@ -292,6 +292,7 @@ function updateNavState() {
 function goTo(index) {
   if (index < 0 || index >= courseData.steps.length) return;
   renderStep(index);
+  window.scrollTo(0, 0);
 }
 
 /**
