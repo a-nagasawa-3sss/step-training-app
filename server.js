@@ -14,15 +14,15 @@
 //   data/progress.json       コースごとの判定基準チェック状態（永続化）
 // ============================================================
 
-require("dotenv").config();
-const express = require("express");
-const multer = require("multer");
-const path = require("path");
-const fs = require("fs");
-const crypto = require("crypto");
-const { GoogleGenerativeAI } = require("@google/generative-ai");
-const Anthropic = require("@anthropic-ai/sdk");
-const OpenAI = require("openai");
+require("dotenv").config(); // .envからAPIキー等を環境変数として読み込む（本番ではホスティング側のSecret管理に置き換える想定）
+const express = require("express"); // HTTPサーバー・ルーティング本体
+const multer = require("multer"); // multipart/form-data（スクリーンショットのアップロード）を受け取るためのミドルウェア
+const path = require("path"); // OS差異を吸収したファイルパス組み立て
+const fs = require("fs"); // データファイル（JSON）の同期読み書き
+const crypto = require("crypto"); // コースIDのUUID発行に使用
+const { GoogleGenerativeAI } = require("@google/generative-ai"); // Gemini用SDK
+const Anthropic = require("@anthropic-ai/sdk"); // Claude用SDK
+const OpenAI = require("openai"); // OpenAI用SDK
 
 const app = express();
 
@@ -70,6 +70,14 @@ function isProviderAvailable(provider) {
 
 // --- ファイルパスの定義 ---
 // STEP_TRAINING_DATA_DIRが設定されている場合はそちらを使う（結合テストで実データを汚さないための切り替え用）
+//
+// ※スケール時の注意：
+//   現状はローカルディスク上のJSONファイルを直接読み書きしているため、
+//   サーバーを複数台・複数プロセスに増やすとデータが共有されず不整合が起きる。
+//   外部サービス化する際は、このDATA_DIR配下のファイルI/Oを
+//   DB（RDS等）やオブジェクトストレージ（S3等）に置き換える必要がある。
+//   また loadXxx/saveXxx は排他制御（ロック）をしていないため、
+//   同時アクセスがあるとファイルの書き込みが競合（後勝ちで上書き）するリスクがある。
 const DATA_DIR = process.env.STEP_TRAINING_DATA_DIR || path.join(__dirname, "data");
 const COURSES_DIR = path.join(DATA_DIR, "courses");
 const COURSE_INDEX_PATH = path.join(COURSES_DIR, "index.json");
@@ -479,6 +487,8 @@ function saveDebugAiResponse(provider, text) {
 // 問題.md本文をJSONボディで送るため、上限を緩めに設定（多くの教材は数十KB程度）
 app.use(express.json({ limit: "5mb" }));
 // public/ 配下（index.html / app.js / style.css）をそのまま配信する
+// ※外部サービス化する場合、静的ファイル配信はCDN（CloudFront等）に切り出し、
+//   このExpressサーバーはAPI（/api/*）専用にする構成がスケールしやすい
 app.use(express.static(path.join(__dirname, "public")));
 
 // ============================================================
@@ -510,6 +520,11 @@ app.get("/api/courses/:id", (req, res) => {
 });
 
 // 新しい.mdから新規コースを生成して保存する（既存コースには影響しない）
+// 処理の流れ：①入力検証 → ②AI APIで教材JSONを生成 → ③教材本体を1ファイルとして保存
+//           → ④一覧(index.json)にメタ情報を追記 → ⑤生成結果の要約をレスポンス
+// ※AI API呼び出し（generateCourseFromMarkdown）は数秒〜数十秒かかるため、
+//   このリクエストはExpressの1ワーカーを長時間占有する。利用者が増える場合は
+//   ジョブキュー化（リクエストを受けたら即202を返し、生成は非同期ワーカーで行う）が必要になる
 app.post("/api/courses/generate", async (req, res) => {
   const { markdown, filename, aiProvider } = req.body;
   if (typeof markdown !== "string" || !markdown.trim()) {
@@ -524,6 +539,8 @@ app.post("/api/courses/generate", async (req, res) => {
     saveCourse(id, course);
 
     // ライブラリ一覧にメタ情報を追加（教材本体は別ファイルなので一覧には含めない）
+    // ※loadCourseIndex→push→saveCourseIndexの間に他リクエストの書き込みが挟まると
+    //   一方の変更が失われる可能性がある（read-modify-writeの競合、ロック未実装）
     const index = loadCourseIndex();
     index.push({
       id,
@@ -636,6 +653,12 @@ app.post("/api/progress", (req, res) => {
 //   未合格の判定基準だけを対象に合否判定させる
 // ============================================================
 
+// 処理の流れ：①コース/ステップの存在確認 → ②未判定の判定基準だけを抽出
+//           → ③プロンプト＋画像をAI APIへ送信 → ④応答JSONを解析し、
+//             依頼した項目数に揃えて補完 → ⑤合否(judgement)を算出してレスポンス
+// ※画像はBufferのままメモリに保持してAI APIへ渡す。アップロード数・同時アクセスが増えると
+//   メモリ使用量が増えるため、スケール時はディスク/オブジェクトストレージ経由への変更や
+//   アップロードサイズ制限の見直しを検討する
 app.post("/api/judge", upload.array("screenshots", 6), async (req, res) => {
   const courseId = req.body.courseId;
   const stepId = Number(req.body.stepId);
