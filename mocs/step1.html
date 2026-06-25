@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>タスク1: VPC リソースの作成 - STEP学習（モック）</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    font-family: "Segoe UI", "Hiragino Kaku Gothic ProN", sans-serif;
+    margin: 0;
+    background: #f4f6f8;
+    color: #1d2630;
+  }
+  header {
+    background: #232f3e;
+    color: #fff;
+    padding: 16px 24px;
+  }
+  header h1 { margin: 0; font-size: 20px; }
+  header p { margin: 4px 0 0; color: #c7d0d9; font-size: 14px; }
+  .mock-badge {
+    display: inline-block;
+    margin-left: 10px;
+    padding: 2px 8px;
+    font-size: 11px;
+    border-radius: 4px;
+    background: #ff9900;
+    color: #232f3e;
+    font-weight: bold;
+    vertical-align: middle;
+  }
+
+  main {
+    max-width: 1100px;
+    margin: 24px auto;
+    padding: 0 16px;
+  }
+
+  #back-to-library-button {
+    display: inline-block;
+    margin-bottom: 16px;
+    padding: 8px 14px;
+    border-radius: 6px;
+    border: 1px solid #232f3e;
+    background: #fff;
+    color: #1d2630;
+    text-decoration: none;
+    cursor: pointer;
+  }
+
+  .course-body {
+    display: flex;
+    gap: 24px;
+  }
+
+  #step-nav {
+    width: 220px;
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  #step-nav a {
+    display: block;
+    text-align: left;
+    padding: 10px 12px;
+    border: 1px solid #d5dbe2;
+    background: #fff;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 13px;
+    color: #1d2630;
+    text-decoration: none;
+  }
+  #step-nav a.active {
+    background: #ff9900;
+    border-color: #ff9900;
+    color: #fff;
+    font-weight: bold;
+  }
+  #step-nav a.passed::after {
+    content: " \2705";
+  }
+
+  #step-panel {
+    flex: 1;
+    background: #fff;
+    border-radius: 8px;
+    padding: 24px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+  }
+
+  .block { margin-bottom: 20px; }
+  .block.plain {
+    border: 1px solid #d5dbe2;
+    border-radius: 8px;
+    background: #f4f6f8;
+    padding: 16px;
+  }
+  .block h3 { margin: 0 0 8px; font-size: 15px; color: #232f3e; }
+  .block code { background: #eef1f4; padding: 1px 4px; border-radius: 4px; }
+
+  .checkpoint {
+    background: #fff8ef;
+    border: 1px solid #ffe2ab;
+    border-radius: 8px;
+    padding: 16px;
+  }
+  .checkpoint ul { margin: 8px 0; padding-left: 20px; }
+  #checkpoint-criteria { list-style: none; padding-left: 0; }
+  #checkpoint-criteria li { margin: 4px 0; }
+  #checkpoint-criteria label { display: flex; align-items: flex-start; gap: 6px; }
+  #checkpoint-criteria input[type="checkbox"] { margin: 2px 0 0; }
+
+  #paste-area {
+    margin-top: 10px;
+    padding: 16px;
+    border: 2px dashed #c7b08a;
+    border-radius: 6px;
+    background: #fffdf7;
+    color: #6b5a3c;
+    font-size: 13px;
+    text-align: center;
+  }
+
+  #judge-button {
+    margin-top: 12px;
+    padding: 10px 16px;
+    background: #ccc;
+    border: none;
+    color: #fff;
+    border-radius: 6px;
+    cursor: not-allowed;
+    font-weight: bold;
+  }
+
+  .nav-buttons {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 24px;
+  }
+  .nav-buttons a, .nav-buttons span {
+    padding: 10px 18px;
+    border-radius: 6px;
+    border: 1px solid #232f3e;
+    background: #232f3e;
+    color: #fff;
+    text-decoration: none;
+  }
+  .nav-buttons span.disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+    background: #232f3e;
+  }
+</style>
+</head>
+<body>
+  <header>
+    <h1>STEP学習 <span class="mock-badge">MOCK</span></h1>
+    <p>クラウドインフラエンジニア (AWS) 実践研修 初級編 ／ 高可用な Web サイト構築</p>
+  </header>
+
+  <main>
+    <a id="back-to-library-button" href="index.html">← 問題一覧へ戻る</a>
+
+    <div class="course-body">
+      <nav id="step-nav">
+        <a class="active" href="step1.html">タスク1: VPC リソースの作成</a>
+        <a href="step2.html">タスク2: EC2 と RDS の作成</a>
+        <a href="step3.html">タスク3: S3 の作成と IAM ロールの利用</a>
+        <a href="step4.html">タスク4: ELB の作成と環境の冗長化</a>
+        <a href="step5.html">タスク5: Systems Manager と CloudWatch の利用</a>
+        <a href="step6.html">タスク6: IaC によるリソースの作成</a>
+      </nav>
+
+      <section id="step-panel">
+        <h2>タスク1: VPC リソースの作成</h2>
+
+        <div class="block">
+          <h3>タスクの GOAL</h3>
+          <div>
+            <ul>
+              <li>必要な VPC リソースを作成する</li>
+              <li>サービスを起動し、確認を行った後は、必ず都度サービスを停止させる</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="block plain">
+          <h3>タスクの流れ</h3>
+          <ol>
+            <li>VPC とサブネットを作成する</li>
+            <li>EC2 用のセキュリティグループを作成する</li>
+            <li>RDS 用のセキュリティグループを作成する</li>
+            <li>RDS 用のサブネットグループを作成する</li>
+          </ol>
+          <h3>タスクの要件</h3>
+          <p><b>VPC</b>：名称 <code>wordpress-vpc</code> / CIDR <code>10.0.0.0/16</code> / リージョン <code>ap-northeast-1</code></p>
+          <p><b>サブネット</b>：Public 1a(<code>10.0.1.0/24</code>) / Public 1c(<code>10.0.2.0/24</code>) / Private 1a(<code>10.0.3.0/24</code>) / Private 1c(<code>10.0.4.0/24</code>)。Public はIGWへの経路あり、Privateはなし。</p>
+          <p><b>セキュリティグループ</b>：<code>ec2-sg</code>(HTTP 80を0.0.0.0/0、SSH 22) / <code>rds-sg</code>(MySQL 3306をec2-sgから)</p>
+          <p><b>RDS用サブネットグループ</b>：<code>wordpress-db-subnet</code>（2つのプライベートサブネット）</p>
+        </div>
+
+        <div class="block checkpoint">
+          <h3>チェックポイント</h3>
+          <p>VPC一覧・サブネット一覧・セキュリティグループ一覧・DBサブネットグループ画面のスクリーンショットをアップロードしてください（複数枚アップロード可）。</p>
+          <ul id="checkpoint-criteria">
+            <li><label><input type="checkbox" disabled checked /> VPC名称が wordpress-vpc であり、CIDRブロックが 10.0.0.0/16 になっている</label></li>
+            <li><label><input type="checkbox" disabled checked /> パブリックサブネットが2つ(10.0.1.0/24, 10.0.2.0/24)、プライベートサブネットが2つ(10.0.3.0/24, 10.0.4.0/24)存在する</label></li>
+            <li><label><input type="checkbox" disabled /> セキュリティグループ ec2-sg と rds-sg が作成されている</label></li>
+            <li><label><input type="checkbox" disabled /> RDS用サブネットグループ wordpress-db-subnet が作成されている（画面に含まれる場合）</label></li>
+          </ul>
+
+          <input type="file" id="screenshot-input" accept="image/*" multiple disabled />
+
+          <div id="paste-area">
+            ここをクリックしてフォーカスした状態で <b>Ctrl+V</b> を押すと、クリップボードの画像を貼り付けられます
+          </div>
+
+          <button id="judge-button" disabled>スクリーンショットをAIに判定してもらう（モックのため無効）</button>
+        </div>
+
+        <div class="nav-buttons">
+          <span class="disabled">← 前のタスクへ</span>
+          <a href="step2.html">次のタスクへ →</a>
+        </div>
+      </section>
+    </div>
+  </main>
+</body>
+</html>

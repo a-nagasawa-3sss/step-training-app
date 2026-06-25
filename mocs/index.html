@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>STEP学習（モック）</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    font-family: "Segoe UI", "Hiragino Kaku Gothic ProN", sans-serif;
+    margin: 0;
+    background: #f4f6f8;
+    color: #1d2630;
+  }
+  header {
+    background: #232f3e;
+    color: #fff;
+    padding: 16px 24px;
+  }
+  header h1 { margin: 0; font-size: 20px; }
+  header p { margin: 4px 0 0; color: #c7d0d9; font-size: 14px; }
+  .mock-badge {
+    display: inline-block;
+    margin-left: 10px;
+    padding: 2px 8px;
+    font-size: 11px;
+    border-radius: 4px;
+    background: #ff9900;
+    color: #232f3e;
+    font-weight: bold;
+    vertical-align: middle;
+  }
+
+  main {
+    max-width: 1100px;
+    margin: 24px auto;
+    padding: 0 16px;
+  }
+
+  #library-screen {
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+  }
+  .library-panel {
+    background: #fff;
+    border-radius: 8px;
+    padding: 20px 24px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+  }
+  .library-panel h2 { margin-top: 0; font-size: 16px; }
+
+  #ai-provider-options { display: flex; gap: 20px; font-size: 14px; }
+  #ai-provider-options label { cursor: pointer; }
+  #ai-provider-note { color: #6b7785; font-size: 12px; margin: 8px 0 0; }
+
+  #course-list { display: flex; flex-direction: column; gap: 10px; }
+  .course-card {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    border: 1px solid #d5dbe2;
+    border-radius: 6px;
+    padding: 12px 14px;
+  }
+  .course-card .meta { flex: 1; }
+  .course-card .meta .name { font-weight: bold; }
+  .course-card .meta .sub { font-size: 12px; color: #6b7785; margin-top: 2px; }
+  .course-card .meta .info { font-size: 12px; color: #6b7785; margin-top: 2px; }
+  .course-card .actions { display: flex; gap: 8px; flex-shrink: 0; }
+  .course-card a.start-button {
+    display: inline-block;
+    padding: 6px 12px;
+    border-radius: 6px;
+    border: 1px solid #232f3e;
+    background: #232f3e;
+    color: #fff;
+    text-decoration: none;
+    cursor: pointer;
+    font-size: 13px;
+  }
+
+  #md-file-input { display: block; margin-bottom: 10px; }
+  #generate-button {
+    padding: 10px 16px;
+    border-radius: 6px;
+    border: none;
+    background: #ccc;
+    color: #fff;
+    font-weight: bold;
+    cursor: not-allowed;
+    margin-right: 8px;
+  }
+  #generate-status { margin-top: 12px; font-size: 13px; color: #6b7785; }
+</style>
+</head>
+<body>
+  <header>
+    <h1>STEP学習 <span class="mock-badge">MOCK</span></h1>
+    <p></p>
+  </header>
+
+  <!-- ライブラリ（問題一覧）画面 -->
+  <main id="library-screen">
+    <section class="library-panel" id="ai-provider-panel">
+      <h2>使用するAI</h2>
+      <div id="ai-provider-options">
+        <label><input type="radio" name="ai-provider" value="gemini" checked /> Gemini</label>
+        <label><input type="radio" name="ai-provider" value="claude" /> Claude</label>
+        <label><input type="radio" name="ai-provider" value="openai" /> OpenAI</label>
+      </div>
+      <p id="ai-provider-note">※ モックのため選択は表示のみで、動作には影響しません。</p>
+    </section>
+
+    <section class="library-panel">
+      <h2>問題一覧</h2>
+      <div id="course-list">
+        <div class="course-card">
+          <div class="meta">
+            <div class="name">クラウドインフラエンジニア (AWS) 実践研修 初級編</div>
+            <div class="sub">高可用な Web サイト構築</div>
+            <div class="info">タスク数：6</div>
+          </div>
+          <div class="actions">
+            <a class="start-button" href="step1.html">開始 / 続行する</a>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="library-panel">
+      <h2 id="upload-heading">新しい問題(.md)を読み込む</h2>
+      <p>※ モックのため読み込み・生成は動作しません。</p>
+      <input type="file" id="md-file-input" accept=".md,text/markdown" disabled />
+      <button id="generate-button" disabled>この問題を生成する</button>
+      <div id="generate-status"></div>
+    </section>
+  </main>
+</body>
+</html>
