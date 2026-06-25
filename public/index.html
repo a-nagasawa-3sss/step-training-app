@@ -14,6 +14,16 @@
 
   <!-- ライブラリ（問題一覧）画面 -->
   <main id="library-screen">
+    <section class="library-panel" id="ai-provider-panel">
+      <h2>使用するAI</h2>
+      <div id="ai-provider-options">
+        <label><input type="radio" name="ai-provider" value="gemini" /> Gemini<span class="ai-provider-model"></span></label>
+        <label><input type="radio" name="ai-provider" value="claude" /> Claude<span class="ai-provider-model"></span></label>
+        <label><input type="radio" name="ai-provider" value="openai" /> OpenAI<span class="ai-provider-model"></span></label>
+      </div>
+      <p id="ai-provider-note"></p>
+    </section>
+
     <section class="library-panel">
       <h2>問題一覧</h2>
       <div id="course-list"></div>
@@ -23,7 +33,7 @@
       <h2 id="upload-heading">新しい問題(.md)を読み込む</h2>
       <p id="upload-target-note"></p>
       <input type="file" id="md-file-input" accept=".md,text/markdown" />
-      <button id="generate-button" disabled>Geminiでこの問題を生成する</button>
+      <button id="generate-button" disabled>この問題を生成する</button>
       <button id="cancel-regenerate-button" style="display:none;">キャンセル</button>
       <div id="generate-status"></div>
     </section>

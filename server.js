@@ -2,9 +2,9 @@
 // クラウド研修 STEP進行デモ - サーバー本体
 //
 // 役割：
-//   1. 問題(.md)をGemini APIに渡してSTEP教材(JSON)を自動生成する
+//   1. 問題(.md)をAI API（Gemini/Claude、トップページで選択）に渡してSTEP教材(JSON)を自動生成する
 //   2. 生成した教材（コース）をライブラリとして複数保存・管理する
-//   3. 受講生がアップロードしたスクリーンショットをGemini APIで判定する
+//   3. 受講生がアップロードしたスクリーンショットをAI APIで判定する
 //   4. 判定結果（チェック済みの判定基準）をコースごとに永続化する
 //
 // データの保存先（すべてファイルベース、DB不使用）：
@@ -21,10 +21,12 @@ const path = require("path");
 const fs = require("fs");
 const crypto = require("crypto");
 const { GoogleGenerativeAI } = require("@google/generative-ai");
+const Anthropic = require("@anthropic-ai/sdk");
+const OpenAI = require("openai");
 
 const app = express();
 
-// スクリーンショットはディスクに保存せず、メモリ上でGemini APIへの送信にのみ使う
+// スクリーンショットはディスクに保存せず、メモリ上でAI APIへの送信にのみ使う
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 8 * 1024 * 1024 }, // 1ファイル最大8MB
@@ -36,6 +38,35 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 //   無料枠の消費状況が分かりにくくなるため、あえて環境変数での切り替えは用意しない）
 const GEMINI_MODEL = "gemini-2.5-flash-lite";
 const genAI = GEMINI_API_KEY ? new GoogleGenerativeAI(GEMINI_API_KEY) : null;
+
+const CLAUDE_API_KEY = process.env.ANTHROPIC_API_KEY;
+// コストを抑えるため、Claude側も最安価格帯のモデルに固定する
+const CLAUDE_MODEL = "claude-haiku-4-5";
+const anthropic = CLAUDE_API_KEY ? new Anthropic({ apiKey: CLAUDE_API_KEY }) : null;
+
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+// コストを抑えるため、OpenAI側も最安価格帯のモデルに固定する
+const OPENAI_MODEL = "gpt-5-mini";
+// OpenAI SDKは既定でステータス429/5xxを自動で最大2回リトライする。
+// このアプリ側のwithRetry()と二重にリトライが掛かり、insufficient_quotaのような
+// リトライしても解決しないエラーで無駄に時間がかかるため、SDK側の自動リトライは無効化する
+const openai = OPENAI_API_KEY ? new OpenAI({ apiKey: OPENAI_API_KEY, maxRetries: 0 }) : null;
+
+// 利用可能なAIプロバイダーの定義。フロントエンドはトップページで選んだ値を
+// aiProvider としてリクエストに含めてくる（未指定・不正な値はgeminiにフォールバックする）
+const PROVIDER_ENV_VAR = { gemini: "GEMINI_API_KEY", claude: "ANTHROPIC_API_KEY", openai: "OPENAI_API_KEY" };
+const PROVIDER_LABEL = { gemini: "Gemini", claude: "Claude", openai: "OpenAI" };
+const PROVIDER_MODEL = { gemini: GEMINI_MODEL, claude: CLAUDE_MODEL, openai: OPENAI_MODEL };
+
+function resolveProvider(value) {
+  return value === "claude" || value === "openai" ? value : "gemini";
+}
+
+function isProviderAvailable(provider) {
+  if (provider === "claude") return Boolean(anthropic);
+  if (provider === "openai") return Boolean(openai);
+  return Boolean(genAI);
+}
 
 // --- ファイルパスの定義 ---
 // STEP_TRAINING_DATA_DIRが設定されている場合はそちらを使う（結合テストで実データを汚さないための切り替え用）
@@ -125,37 +156,208 @@ function saveProgress(progress) {
 }
 
 // ============================================================
-// Gemini API共通処理
+// AI API共通処理（Gemini / Claude / OpenAI）
 // ============================================================
 
 /**
- * Gemini APIを呼び出し、一時的なエラー（503混雑 / 429レート制限）の場合だけ
+ * AI APIを呼び出し、一時的なエラー（503/529混雑 / 429レート制限）の場合だけ
  * 指数的に待機時間を延ばしながらリトライする。
- * それ以外のエラー（APIキー不正など）は即座に投げる。
+ * それ以外のエラー（APIキー不正・利用上限/未払いによるinsufficient_quotaなど、
+ * 待っても解決しないエラー）は即座に投げる。
  *
+ * @param {() => Promise<any>} fn 実際のAPI呼び出し（リトライ時は毎回呼び直される）
  * @param {number} maxRetries  最大リトライ回数（初回呼び出しを含まない）
  * @param {number} baseDelayMs 1回目のリトライ前に待つ時間。2回目以降はこの倍数で増える
  */
-async function generateContentWithRetry(model, contents, maxRetries = 2, baseDelayMs = 1000) {
+async function withRetry(fn, maxRetries = 2, baseDelayMs = 1000) {
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
-      return await model.generateContent(contents);
+      return await fn();
     } catch (err) {
-      const retryable = /503|429|UNAVAILABLE|RESOURCE_EXHAUSTED/.test(err.message || "");
+      // OpenAIのinsufficient_quota（利用上限到達/未払い）は429で返ってくるが、
+      // 待っても解消しないため、リトライ対象から除外する
+      const permanent = /insufficient_quota/i.test(err.code || err.type || "");
+      const retryable = !permanent && /500|503|429|529|UNAVAILABLE|RESOURCE_EXHAUSTED|overloaded/i.test(err.message || "");
       if (!retryable || attempt === maxRetries) throw err;
       await new Promise((resolve) => setTimeout(resolve, baseDelayMs * (attempt + 1)));
     }
   }
 }
 
+/** Claudeの応答(content配列)からテキスト部分だけを連結して取り出す */
+function claudeText(message) {
+  return message.content.map((block) => block.text || "").join("");
+}
+
 /**
- * Geminiの応答テキストからJSONを取り出す。
+ * APIエラーのメッセージを、画面に表示してわかりやすい文言に補強する。
+ * OpenAIのinsufficient_quotaは「利用上限/支払い未設定」が原因であり、APIキーの設定ミスと
+ * 見分けづらいため、対処先（請求設定ページ）を明示する。
+ */
+function describeProviderError(err) {
+  if (/insufficient_quota/i.test(err.code || err.type || "")) {
+    return (
+      err.message +
+      "（OpenAIの利用上限に達しています。）"
+    );
+  }
+  return err.message;
+}
+
+/** 出力上限に達して応答が途中で切れた場合のエラーを投げる（Claude/OpenAI共通） */
+function throwIfTruncated(isTruncated) {
+  if (!isTruncated) return;
+  throw new Error(
+    "AIの応答が出力上限に達し、途中で切れました。教材のタスク数を減らすか、.mdを分割して再度お試しください。"
+  );
+}
+
+/**
+ * 教材生成用に、選択中のプロバイダーへプロンプトを送ってテキスト応答を取得する。
+ * コース生成は長文入力＋複雑な構造化出力になるため、判定より多めにリトライする。
+ */
+async function getCourseGenerationText(provider, prompt) {
+  if (provider === "claude") {
+    // タスク数の多い教材はJSON出力が長くなるため、デフォルト(8192)では応答が
+    // 途中で切れてJSONが不完全になることがある。20000は、Anthropic SDKが
+    // 「10分を超える可能性がある」と判断してストリーミングを要求してくる閾値
+    // （実測で32000以上）の手前で、かつ十分な余裕を持たせた値。
+    const message = await withRetry(
+      () =>
+        anthropic.messages.create({
+          model: CLAUDE_MODEL,
+          max_tokens: 20000,
+          messages: [{ role: "user", content: prompt }],
+        }),
+      4,
+      3000
+    );
+    throwIfTruncated(message.stop_reason === "max_tokens");
+    return claudeText(message);
+  }
+  if (provider === "openai") {
+    const completion = await withRetry(
+      () =>
+        openai.chat.completions.create({
+          model: OPENAI_MODEL,
+          max_completion_tokens: 20000,
+          reasoning_effort: "minimal", // コストを抑えるため、推論に余分なトークンを使わせない
+          messages: [{ role: "user", content: prompt }],
+        }),
+      4,
+      3000
+    );
+    throwIfTruncated(completion.choices[0].finish_reason === "length");
+    return completion.choices[0].message.content || "";
+  }
+  const model = genAI.getGenerativeModel({ model: GEMINI_MODEL });
+  const result = await withRetry(() => model.generateContent([prompt]), 4, 3000);
+  return result.response.text();
+}
+
+/** 判定用に、選択中のプロバイダーへプロンプト＋スクリーンショットを送ってテキスト応答を取得する */
+async function getJudgeResponseText(provider, prompt, files) {
+  if (provider === "claude") {
+    const message = await withRetry(() =>
+      anthropic.messages.create({
+        model: CLAUDE_MODEL,
+        max_tokens: 2048,
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: prompt },
+              ...files.map((file) => ({
+                type: "image",
+                source: { type: "base64", media_type: file.mimetype, data: file.buffer.toString("base64") },
+              })),
+            ],
+          },
+        ],
+      })
+    );
+    return claudeText(message).trim();
+  }
+  if (provider === "openai") {
+    const completion = await withRetry(() =>
+      openai.chat.completions.create({
+        model: OPENAI_MODEL,
+        max_completion_tokens: 2048,
+        reasoning_effort: "minimal",
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: prompt },
+              ...files.map((file) => ({
+                type: "image_url",
+                image_url: { url: `data:${file.mimetype};base64,${file.buffer.toString("base64")}` },
+              })),
+            ],
+          },
+        ],
+      })
+    );
+    return (completion.choices[0].message.content || "").trim();
+  }
+  const model = genAI.getGenerativeModel({ model: GEMINI_MODEL });
+  const imageParts = files.map((file) => ({
+    inlineData: { mimeType: file.mimetype, data: file.buffer.toString("base64") },
+  }));
+  const result = await withRetry(() => model.generateContent([prompt, ...imageParts]));
+  return result.response.text().trim();
+}
+
+/**
+ * JSON文字列リテラル内に生の制御文字（改行・タブ等）が混在していても解釈できるよう、
+ * 文字列内だけを対象に \n \t 等へエスケープし直す。
+ * コードブロックを含む長文を生成させると、AIが「改行を保持したまま転記して」という
+ * 指示を素直に解釈しすぎて、JSON的には本来 \n とすべき箇所に生の改行文字を出力してしまい、
+ * JSON.parseが「Bad control character in string literal」で失敗するケースがあるための対策。
+ */
+function escapeControlCharsInJsonStrings(text) {
+  let result = "";
+  let inString = false;
+  let escapeNext = false;
+  for (const ch of text) {
+    if (!inString) {
+      if (ch === '"') inString = true;
+      result += ch;
+      continue;
+    }
+    if (escapeNext) {
+      result += ch;
+      escapeNext = false;
+      continue;
+    }
+    if (ch === "\\") {
+      result += ch;
+      escapeNext = true;
+      continue;
+    }
+    if (ch === '"') {
+      inString = false;
+      result += ch;
+      continue;
+    }
+    const code = ch.codePointAt(0);
+    if (code === 0x0a) result += "\\n";
+    else if (code === 0x0d) result += "\\r";
+    else if (code === 0x09) result += "\\t";
+    else if (code < 0x20) result += "\\u" + code.toString(16).padStart(4, "0");
+    else result += ch;
+  }
+  return result;
+}
+
+/**
+ * AIの応答テキストからJSONを取り出す。
  * 「JSONのみを返して」と指示しても ```json ... ``` のコードブロックで
  * 返してくることがあるため、その記号を取り除いてからparseする。
  */
 function extractJson(text) {
   const cleaned = text.trim().replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/```$/, "").trim();
-  return JSON.parse(cleaned);
+  return JSON.parse(escapeControlCharsInJsonStrings(cleaned));
 }
 
 /**
@@ -183,14 +385,17 @@ function validateCourse(course) {
 }
 
 /**
- * 問題の.md本文をGemini APIに渡し、STEP単位の教材JSON（title/subtitle/steps[]）を生成する。
+ * 問題の.md本文をAI APIに渡し、STEP単位の教材JSON（title/subtitle/steps[]）を生成する。
  * 生成→JSON抽出→スキーマ検証までをこの関数内で完結させ、
  * 呼び出し元（generate/regenerateの各エンドポイント）はファイル保存だけに専念できるようにしている。
  */
-async function generateCourseFromMarkdown(markdown) {
-  if (!genAI) throw new Error("GEMINI_API_KEY が設定されていません（.env を確認してください）");
+async function generateCourseFromMarkdown(markdown, aiProvider) {
+  const provider = resolveProvider(aiProvider);
+  if (!isProviderAvailable(provider)) {
+    throw new Error(`${PROVIDER_ENV_VAR[provider]} が設定されていません（.env を確認してください）`);
+  }
 
-  // Geminiへの指示文（プロンプト）。
+  // AIへの指示文（プロンプト）。
   // 「変換ルール」で出力の質を細かく制御している点が肝になる：
   //   - STEP数を固定せず、教材の見出し構成に応じて柔軟に分割させる
   //   - テーブルの転記だけで終わらせず、説明文を伴う「文章問題」らしい構成にする
@@ -198,25 +403,20 @@ async function generateCourseFromMarkdown(markdown) {
   //     （これを守らないと、受講生がコピーした複数行コマンドが1行に連結されてしまい、
   //       ターミナルでの実行エラーにつながる）
   const prompt = [
-    "あなたはクラウド研修教材の編集者です。以下のMarkdown形式の研修問題文を読み、",
-    "Webアプリで1タスクずつ進められる形式のJSONデータに変換してください。",
+    "あなたはクラウド研修教材の編集者です。以下のMarkdown形式の研修問題文を、",
+    "Webアプリで1タスクずつ進められるJSONデータに変換してください。",
     "",
     "# 変換ルール",
-    "- 教材中の「タスク」や大見出しの単位を1つのstepとして分割すること。stepの数は教材の構成によって変わってよく、",
-    "  6個や決まった数に揃える必要はない。教材が自然に分かれる単位（大見出し）の数だけstepを作ること",
-    "- 各stepには、受講生が達成すべきGOAL、具体的な設定値や手順をまとめたdetail、",
-    "  そして受講生がAWSコンソールのスクリーンショットを提出した際にAIが客観的に確認できる判定基準(criteria)を含めること",
-    "- criteriaは「〜になっている」「〜が作成されている」のように、スクリーンショットを見れば判定できる具体的な文にすること（リソース名や設定値を含める）",
-    "- detailHtmlは、設定値のテーブルや手順を機械的に転記するだけにせず、文章問題として読めるようにすること。",
-    "  具体的には、テーブルや手順の前に「このタスクでは何を、なぜ行うのか」を説明する導入文（1〜3文程度）を必ず入れ、",
-    "  複数の小タスク（1-1, 1-2...）がある場合はそれぞれの前にも一言説明文を添えること。",
-    "  設定値の一覧（テーブル）はそのまま転記してよいが、テーブルだけが並ぶ構成にはしないこと",
-    "- goalHtmlも単語の箇条書きではなく、何を達成すれば良いかが分かる短い文章（1〜2文、または説明付きの箇条書き）にすること",
-    "- detailHtml・goalHtmlは簡単なHTML（ul/ol/li/p/table/code程度）で記述すること",
-    "- 教材中の ``` で囲まれたコードブロック（シェルコマンド等）は、1文字も改変・要約・分割せず、元のテキストのまま転記すること。",
-    "  複数行のコマンドは1つの<pre><code>...</code></pre>タグで囲み、行ごとに\\nで改行を入れること。",
-    "  コマンドを1行ずつ別々の<code>タグに分けたり、改行を取り除いて1行に連結したりしては絶対にいけない",
-    "  （受講生がそのままコピーしてターミナルに貼り付けて実行するため、改行が失われると実行エラーになる）",
+    "- 教材中の「タスク」や大見出しの単位を1つのstepとする。step数は教材の構成に応じて可変でよい",
+    "- 各stepにGOAL(goalHtml)・要件(detailHtml)・判定基準(checkpoint.criteria)を含める。",
+    "  criteriaは「〜になっている」のように、スクリーンショットで判定できる具体的な文（リソース名・設定値を含む）にする",
+    "- goalHtml・detailHtmlは単語の箇条書きやテーブルの転記だけで終わらせず、",
+    "  「何を・なぜ行うのか」を説明する文章（導入文）を添えること。テーブル自体はそのまま転記してよい。",
+    "  簡単なHTML（p/ul/ol/li/table/pre/code程度）で記述する",
+    "- ``` のコードブロック（シェルコマンド等）は1文字も改変・要約・分割せず原文のまま<pre><code>に転記する。",
+    "  複数行は1つのタグにまとめ、行間の改行や他の制御文字は必ず\\n・\\t等にエスケープする",
+    "  （生の改行文字のまま出力したり1行に連結したりするのは厳禁。出力がJSON.parse()できなくなる上、",
+    "  受講生がコピペ実行するコマンドも壊れる）",
     "",
     "# 出力形式",
     "次のJSON形式のみを出力してください。説明文やコードブロック記号は付けないこと。",
@@ -246,20 +446,30 @@ async function generateCourseFromMarkdown(markdown) {
     markdown,
   ].join("\n");
 
-  const model = genAI.getGenerativeModel({ model: GEMINI_MODEL });
-  // コース生成は教材全文という長文入力＋複雑な構造化出力になるため、判定API(/api/judge)より
-  // 一時的な503(混雑)に遭遇しやすい。そのため待機時間・リトライ回数を多めに設定している。
-  const result = await generateContentWithRetry(model, [prompt], 4, 3000);
-  const text = result.response.text();
+  const text = await getCourseGenerationText(provider, prompt);
+  saveDebugAiResponse(provider, text);
 
   let course;
   try {
     course = extractJson(text);
   } catch (err) {
-    throw new Error("Geminiの出力をJSONとして解釈できませんでした: " + err.message);
+    throw new Error("AIの出力をJSONとして解釈できませんでした: " + err.message);
   }
   validateCourse(course);
   return course;
+}
+
+/**
+ * デバッグ用：コース生成APIの生レスポンスをファイルに保存する（直前の1回分のみ、上書き）。
+ * JSON解釈エラーが起きた際に、AIが実際に何を返したかをエディタで直接確認できるようにするための仕組み。
+ */
+function saveDebugAiResponse(provider, text) {
+  try {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+    fs.writeFileSync(path.join(DATA_DIR, `debug-last-course-response.${provider}.txt`), text);
+  } catch (err) {
+    console.error("デバッグ用レスポンスの保存に失敗しました", err);
+  }
 }
 
 // ============================================================
@@ -276,6 +486,17 @@ app.use(express.static(path.join(__dirname, "public")));
 //   一覧取得 / 個別取得 / 新規生成 / 再生成 / 削除
 // ============================================================
 
+// 各AIプロバイダーのAPIキー設定状況とモデル名を返す。
+// トップページのAI選択UIは、availableがfalseのプロバイダーを選択不可にし、
+// modelをラベルの横に表示する
+app.get("/api/providers", (req, res) => {
+  res.json({
+    gemini: { available: Boolean(genAI), model: GEMINI_MODEL },
+    claude: { available: Boolean(anthropic), model: CLAUDE_MODEL },
+    openai: { available: Boolean(openai), model: OPENAI_MODEL },
+  });
+});
+
 // ライブラリ画面に表示する一覧（メタ情報のみ、教材本体は含まない）
 app.get("/api/courses", (req, res) => {
   res.json(loadCourseIndex());
@@ -290,13 +511,14 @@ app.get("/api/courses/:id", (req, res) => {
 
 // 新しい.mdから新規コースを生成して保存する（既存コースには影響しない）
 app.post("/api/courses/generate", async (req, res) => {
-  const { markdown, filename } = req.body;
+  const { markdown, filename, aiProvider } = req.body;
   if (typeof markdown !== "string" || !markdown.trim()) {
     return res.status(400).json({ error: "markdown が空です" });
   }
+  const provider = resolveProvider(aiProvider);
 
   try {
-    const course = await generateCourseFromMarkdown(markdown);
+    const course = await generateCourseFromMarkdown(markdown, provider);
     // コースIDはUUIDで発行する（ファイル名・進捗データのキーとして使う）
     const id = crypto.randomUUID();
     saveCourse(id, course);
@@ -309,6 +531,8 @@ app.post("/api/courses/generate", async (req, res) => {
       subtitle: course.subtitle,
       sourceFilename: filename || "",
       createdAt: new Date().toISOString(),
+      aiProvider: provider,
+      aiModel: PROVIDER_MODEL[provider],
       builtin: false,
     });
     saveCourseIndex(index);
@@ -316,7 +540,7 @@ app.post("/api/courses/generate", async (req, res) => {
     res.json({ id, title: course.title, subtitle: course.subtitle, stepCount: course.steps.length });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: "コースの生成に失敗しました: " + err.message });
+    res.status(500).json({ error: "コースの生成に失敗しました: " + describeProviderError(err) });
   }
 });
 
@@ -324,7 +548,7 @@ app.post("/api/courses/generate", async (req, res) => {
 // 教材の内容が変わるため、そのコースの判定済み進捗もリセットする。
 app.post("/api/courses/:id/regenerate", async (req, res) => {
   const { id } = req.params;
-  const { markdown, filename } = req.body;
+  const { markdown, filename, aiProvider } = req.body;
   const index = loadCourseIndex();
   const entry = index.find((c) => c.id === id);
 
@@ -333,15 +557,18 @@ app.post("/api/courses/:id/regenerate", async (req, res) => {
   if (typeof markdown !== "string" || !markdown.trim()) {
     return res.status(400).json({ error: "markdown が空です" });
   }
+  const provider = resolveProvider(aiProvider);
 
   try {
-    const course = await generateCourseFromMarkdown(markdown);
+    const course = await generateCourseFromMarkdown(markdown, provider);
     saveCourse(id, course); // 同じIDのファイルを上書き
 
     // 一覧のメタ情報も最新化する
     entry.title = course.title;
     entry.subtitle = course.subtitle;
     entry.sourceFilename = filename || entry.sourceFilename;
+    entry.aiProvider = provider;
+    entry.aiModel = PROVIDER_MODEL[provider];
     entry.updatedAt = new Date().toISOString();
     saveCourseIndex(index);
 
@@ -353,7 +580,7 @@ app.post("/api/courses/:id/regenerate", async (req, res) => {
     res.json({ id, title: course.title, subtitle: course.subtitle, stepCount: course.steps.length });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: "コースの再生成に失敗しました: " + err.message });
+    res.status(500).json({ error: "コースの再生成に失敗しました: " + describeProviderError(err) });
   }
 });
 
@@ -405,13 +632,14 @@ app.post("/api/progress", (req, res) => {
 
 // ============================================================
 // 判定API
-//   アップロードされたスクリーンショットをGeminiに見せ、
+//   アップロードされたスクリーンショットをAIに見せ、
 //   未合格の判定基準だけを対象に合否判定させる
 // ============================================================
 
 app.post("/api/judge", upload.array("screenshots", 6), async (req, res) => {
   const courseId = req.body.courseId;
   const stepId = Number(req.body.stepId);
+  const provider = resolveProvider(req.body.aiProvider);
   const course = loadCourse(courseId);
   const step = course && course.steps.find((s) => s.id === stepId);
 
@@ -421,8 +649,8 @@ app.post("/api/judge", upload.array("screenshots", 6), async (req, res) => {
   if (!req.files || req.files.length === 0) {
     return res.status(400).json({ error: "スクリーンショットがアップロードされていません" });
   }
-  if (!genAI) {
-    return res.status(500).json({ error: "GEMINI_API_KEY が設定されていません（.env を確認してください）" });
+  if (!isProviderAvailable(provider)) {
+    return res.status(500).json({ error: `${PROVIDER_ENV_VAR[provider]} が設定されていません（.env を確認してください）` });
   }
 
   // criteriaIndices: フロントエンドがまだチェックの入っていない判定基準のインデックスだけを送ってくる。
@@ -444,7 +672,7 @@ app.post("/api/judge", upload.array("screenshots", 6), async (req, res) => {
     return res.json({ judgement: "OK", reason: "判定対象の項目がありません（すべて判定済みです）。", checks: [] });
   }
 
-  // 判定基準には元のインデックス番号を振っておき、Geminiの出力にも同じindexを
+  // 判定基準には元のインデックス番号を振っておき、AIの出力にも同じindexを
   // 引き継がせることで、レスポンスとフロントエンドの状態（どの項目が何番目か）を正しく対応付ける
   const criteriaText = targetIndices.map((i) => `${i}. ${allCriteria[i]}`).join("\n");
   const prompt = [
@@ -463,18 +691,9 @@ app.post("/api/judge", upload.array("screenshots", 6), async (req, res) => {
   ].join("\n");
 
   try {
-    const model = genAI.getGenerativeModel({ model: GEMINI_MODEL });
-    // アップロードされた画像はメモリ上のBufferのまま、base64文字列に変換してGeminiへ渡す
+    // アップロードされた画像はメモリ上のBufferのまま、base64文字列に変換してAI APIへ渡す
     // （ディスクへの保存は行わない）
-    const imageParts = req.files.map((file) => ({
-      inlineData: {
-        mimeType: file.mimetype,
-        data: file.buffer.toString("base64"),
-      },
-    }));
-    const result = await generateContentWithRetry(model, [prompt, ...imageParts]);
-
-    const text = result.response.text().trim();
+    const text = await getJudgeResponseText(provider, prompt, req.files);
     let parsed;
     try {
       parsed = extractJson(text);
@@ -483,7 +702,7 @@ app.post("/api/judge", upload.array("screenshots", 6), async (req, res) => {
       parsed = { reason: text, checks: [] };
     }
 
-    // Geminiが返したchecks配列をindexで引けるようにしておく
+    // AIが返したchecks配列をindexで引けるようにしておく
     const checksByIndex = new Map();
     if (Array.isArray(parsed.checks)) {
       parsed.checks.forEach((c) => {
@@ -491,7 +710,7 @@ app.post("/api/judge", upload.array("screenshots", 6), async (req, res) => {
       });
     }
     // 依頼した項目(targetIndices)を基準にレスポンスを組み立てる。
-    // Geminiが一部の項目について回答を返し忘れた場合も、ここでpassed: falseとして補完される
+    // AIが一部の項目について回答を返し忘れた場合も、ここでpassed: falseとして補完される
     const checks = targetIndices.map((i) => {
       const found = checksByIndex.get(i);
       return {
@@ -505,7 +724,7 @@ app.post("/api/judge", upload.array("screenshots", 6), async (req, res) => {
     res.json({ judgement, reason: parsed.reason || "", checks });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: "Gemini API の呼び出しに失敗しました: " + err.message });
+    res.status(500).json({ error: `${PROVIDER_LABEL[provider]} API の呼び出しに失敗しました: ` + describeProviderError(err) });
   }
 });
 

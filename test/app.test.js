@@ -54,10 +54,143 @@ beforeEach(() => {
   window.URL.createObjectURL = jest.fn(() => "blob:mock-url");
   window.confirm = jest.fn(() => true);
   window.alert = jest.fn();
+  window.localStorage.clear();
 });
 
 afterEach(() => {
   jest.restoreAllMocks();
+});
+
+// ============================================================
+// AIプロバイダー選択
+// ============================================================
+function providersBody({ gemini = true, claude = true, openai = true } = {}) {
+  return {
+    gemini: { available: gemini, model: "gemini-2.5-flash-lite" },
+    claude: { available: claude, model: "claude-haiku-4-5" },
+    openai: { available: openai, model: "gpt-5-mini" },
+  };
+}
+
+describe("AIプロバイダー選択", () => {
+  it("両方利用可能な場合はデフォルトでGeminiが選択され、モデル名も表示される", async () => {
+    setupFetchMock([
+      { method: "GET", match: /\/api\/providers$/, handler: () => ({ body: providersBody() }) },
+    ]);
+    loadApp();
+    await flush(2);
+
+    const gemini = document.querySelector('input[name="ai-provider"][value="gemini"]');
+    const claude = document.querySelector('input[name="ai-provider"][value="claude"]');
+    expect(gemini.checked).toBe(true);
+    expect(claude.checked).toBe(false);
+    expect(gemini.disabled).toBe(false);
+    expect(claude.disabled).toBe(false);
+    expect(gemini.closest("label").textContent).toContain("gemini-2.5-flash-lite");
+    expect(claude.closest("label").textContent).toContain("claude-haiku-4-5");
+  });
+
+  it("APIキー未設定のプロバイダーは選択不可になり注記が表示される", async () => {
+    setupFetchMock([
+      { method: "GET", match: /\/api\/providers$/, handler: () => ({ body: providersBody({ claude: false }) }) },
+    ]);
+    loadApp();
+    await flush(2);
+
+    const claude = document.querySelector('input[name="ai-provider"][value="claude"]');
+    expect(claude.disabled).toBe(true);
+    expect(document.getElementById("ai-provider-note").textContent).toContain("Claude");
+  });
+
+  it("選択を切り替えるとlocalStorageに保存され、生成リクエストに反映される", async () => {
+    const fetchMock = setupFetchMock([
+      { method: "GET", match: /\/api\/providers$/, handler: () => ({ body: providersBody() }) },
+      {
+        method: "POST",
+        match: /\/api\/courses\/generate$/,
+        handler: () => ({ body: { id: "new-1", title: "新教材", subtitle: "", stepCount: 1 } }),
+      },
+    ]);
+    loadApp();
+    await flush(2);
+
+    const claude = document.querySelector('input[name="ai-provider"][value="claude"]');
+    claude.checked = true;
+    claude.dispatchEvent(new Event("change"));
+    expect(window.localStorage.getItem("stepTrainingAiProvider")).toBe("claude");
+
+    const input = document.getElementById("md-file-input");
+    const file = new File(["# 研修問題"], "q.md", { type: "text/markdown" });
+    Object.defineProperty(input, "files", { value: [file] });
+    input.dispatchEvent(new Event("change"));
+    await flush(3);
+
+    document.getElementById("generate-button").click();
+    await flush(3);
+
+    const call = fetchMock.mock.calls.find(([url]) => /\/api\/courses\/generate$/.test(url));
+    expect(JSON.parse(call[1].body).aiProvider).toBe("claude");
+  });
+
+  it("保存済みの選択がAPIキー未設定の場合は利用可能なプロバイダーにフォールバックする", async () => {
+    window.localStorage.setItem("stepTrainingAiProvider", "claude");
+    setupFetchMock([
+      { method: "GET", match: /\/api\/providers$/, handler: () => ({ body: providersBody({ claude: false }) }) },
+    ]);
+    loadApp();
+    await flush(2);
+
+    const gemini = document.querySelector('input[name="ai-provider"][value="gemini"]');
+    expect(gemini.checked).toBe(true);
+  });
+
+  it("全プロバイダーが利用不可の場合は誰も選択されないままになる", async () => {
+    setupFetchMock([
+      {
+        method: "GET",
+        match: /\/api\/providers$/,
+        handler: () => ({ body: providersBody({ gemini: false, claude: false, openai: false }) }),
+      },
+    ]);
+    loadApp();
+    await flush(2);
+
+    document.querySelectorAll('input[name="ai-provider"]').forEach((radio) => {
+      expect(radio.checked).toBe(false);
+      expect(radio.disabled).toBe(true);
+    });
+  });
+
+  it("ラジオがチェックされていない状態のchangeイベントは選択に反映されない", async () => {
+    setupFetchMock([
+      { method: "GET", match: /\/api\/providers$/, handler: () => ({ body: providersBody() }) },
+    ]);
+    loadApp();
+    await flush(2);
+
+    const claude = document.querySelector('input[name="ai-provider"][value="claude"]');
+    claude.checked = false; // チェックを入れずにchangeイベントだけ発火させる
+    claude.dispatchEvent(new Event("change"));
+
+    const gemini = document.querySelector('input[name="ai-provider"][value="gemini"]');
+    expect(gemini.checked).toBe(true); // デフォルト選択(gemini)のまま変わらない
+    expect(window.localStorage.getItem("stepTrainingAiProvider")).not.toBe("claude");
+  });
+
+  it("一部のプロバイダー情報が欠けている応答でもエラーにならず未選択扱いになる", async () => {
+    setupFetchMock([
+      {
+        method: "GET",
+        match: /\/api\/providers$/,
+        handler: () => ({ body: { gemini: { available: true, model: "gemini-2.5-flash-lite" } } }),
+      },
+    ]);
+    loadApp();
+    await flush(2);
+
+    const claude = document.querySelector('input[name="ai-provider"][value="claude"]');
+    expect(claude.disabled).toBe(true);
+  });
 });
 
 // ============================================================
@@ -94,6 +227,52 @@ describe("ライブラリ画面", () => {
     expect(cards[0].querySelectorAll("button")).toHaveLength(1);
     // 生成コースは再生成・削除ボタンを含む3つのボタン
     expect(cards[1].querySelectorAll("button")).toHaveLength(3);
+  });
+
+  it("生成日時と使用AIモデルをカードに表示する(組み込みコースは表示しない)", async () => {
+    setupFetchMock([
+      {
+        method: "GET",
+        match: /\/api\/courses$/,
+        handler: () => ({
+          body: [
+            { id: "builtin-1", title: "組み込み", subtitle: "", builtin: true },
+            {
+              id: "gen-1",
+              title: "生成コース",
+              subtitle: "",
+              builtin: false,
+              createdAt: "2026-01-02T03:04:00.000Z",
+              aiModel: "claude-haiku-4-5",
+            },
+          ],
+        }),
+      },
+    ]);
+    loadApp();
+    await flush(2);
+
+    const cards = document.querySelectorAll(".course-card");
+    expect(cards[0].querySelector(".info")).toBeNull();
+    expect(cards[1].querySelector(".info").textContent).toContain("生成日時");
+    expect(cards[1].querySelector(".info").textContent).toContain("claude-haiku-4-5");
+  });
+
+  it("createdAtが不正な日時文字列の場合はInvalid Dateを表示しない", async () => {
+    setupFetchMock([
+      {
+        method: "GET",
+        match: /\/api\/courses$/,
+        handler: () => ({
+          body: [{ id: "gen-1", title: "生成コース", subtitle: "", builtin: false, createdAt: "not-a-date" }],
+        }),
+      },
+    ]);
+    loadApp();
+    await flush(2);
+
+    const info = document.querySelector(".course-card .info");
+    expect(info.textContent).not.toContain("Invalid Date");
   });
 
   it("開始ボタンでコース画面に切り替わり、最初のSTEPが表示される", async () => {
@@ -174,6 +353,42 @@ describe("ライブラリ画面", () => {
     await flush(2);
 
     expect(document.querySelector("#step-nav button").classList.contains("passed")).toBe(true);
+  });
+
+  it("保存済み進捗が一部のみ合格の場合はnavにpassedクラスが付かない", async () => {
+    setupFetchMock([
+      {
+        method: "GET",
+        match: /\/api\/courses$/,
+        handler: () => ({ body: [{ id: "c1", title: "コース1", builtin: false }] }),
+      },
+      {
+        method: "GET",
+        match: /\/api\/courses\/c1$/,
+        handler: () => ({
+          body: {
+            title: "コース1",
+            subtitle: "",
+            steps: [
+              {
+                id: 1,
+                title: "タスク1",
+                goalHtml: "",
+                detailHtml: "",
+                checkpoint: { instruction: "i", criteria: ["a", "b"] },
+              },
+            ],
+          },
+        }),
+      },
+      { method: "GET", match: /\/api\/progress\/c1$/, handler: () => ({ body: { 1: [true, false] } }) },
+    ]);
+    loadApp();
+    await flush(2);
+    document.querySelector(".start-button").click();
+    await flush(2);
+
+    expect(document.querySelector("#step-nav button").classList.contains("passed")).toBe(false);
   });
 
   it("コース読み込みに失敗した場合はalertを表示する", async () => {
@@ -379,6 +594,44 @@ describe("問題(.md)の読み込みと生成", () => {
 
     expect(fetchMock).not.toHaveBeenCalledWith(expect.stringContaining("regenerate"), expect.anything());
   });
+
+  it("再生成モードでconfirmをOKすると/regenerateへ送信される", async () => {
+    const fetchMock = setupFetchMock([
+      {
+        method: "GET",
+        match: /\/api\/courses$/,
+        handler: () => ({ body: [{ id: "c1", title: "コース1", builtin: false }] }),
+      },
+      {
+        method: "POST",
+        match: /\/api\/courses\/c1\/regenerate$/,
+        handler: () => ({ body: { id: "c1", title: "再生成後", subtitle: "", stepCount: 2 } }),
+      },
+    ]);
+    loadApp();
+    await flush(2);
+
+    document.querySelectorAll(".course-card button")[1].click(); // 「この問題を再生成」
+    const input = document.getElementById("md-file-input");
+    const file = new File(["# 研修問題"], "q.md", { type: "text/markdown" });
+    Object.defineProperty(input, "files", { value: [file] });
+    input.dispatchEvent(new Event("change"));
+    await flush(3);
+
+    window.confirm.mockReturnValueOnce(true);
+    document.getElementById("generate-button").click();
+    await flush(3);
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/courses/c1/regenerate",
+      expect.objectContaining({ method: "POST" })
+    );
+    const statusBox = document.getElementById("generate-status");
+    expect(statusBox.className).toBe("ok");
+    expect(statusBox.textContent).toContain("再生成後");
+    // 再生成モードは解除され、通常の見出しに戻る
+    expect(document.getElementById("upload-heading").textContent).toBe("新しい問題(.md)を読み込む");
+  });
 });
 
 // ============================================================
@@ -422,6 +675,18 @@ describe("STEP進行画面", () => {
     expect(document.getElementById("next-button").disabled).toBe(true);
 
     document.getElementById("prev-button").click();
+    expect(document.getElementById("step-title").textContent).toBe("タスク1");
+  });
+
+  it("範囲外のSTEPへの移動は無視される(prevボタンのdisabledガードを回避して直接検証)", async () => {
+    setupFetchMock(buildStepCourseRoutes());
+    await openCourse1();
+
+    // 通常はdisabledでクリックできないため、ガード処理(goTo内の範囲チェック)自体を検証する
+    const prevButton = document.getElementById("prev-button");
+    prevButton.disabled = false;
+    prevButton.click();
+
     expect(document.getElementById("step-title").textContent).toBe("タスク1");
   });
 
@@ -493,6 +758,28 @@ describe("STEP進行画面", () => {
     const pasteEvent = new Event("paste", { bubbles: true, cancelable: true });
     pasteEvent.clipboardData = { items: [{ type: "text/plain", getAsFile: () => null }] };
     document.getElementById("paste-area").dispatchEvent(pasteEvent);
+
+    expect(document.querySelectorAll("#preview .thumb")).toHaveLength(0);
+  });
+
+  it("clipboardDataが無い貼り付けイベントでも何も起きない", async () => {
+    setupFetchMock(buildStepCourseRoutes());
+    await openCourse1();
+
+    const pasteEvent = new Event("paste", { bubbles: true, cancelable: true });
+    // clipboardDataを設定しないまま発火させる
+    document.getElementById("paste-area").dispatchEvent(pasteEvent);
+
+    expect(document.querySelectorAll("#preview .thumb")).toHaveLength(0);
+  });
+
+  it("filesがnullのchangeイベントでも何も起きない", async () => {
+    setupFetchMock(buildStepCourseRoutes());
+    await openCourse1();
+
+    const input = document.getElementById("screenshot-input");
+    Object.defineProperty(input, "files", { value: null, configurable: true });
+    input.dispatchEvent(new Event("change"));
 
     expect(document.querySelectorAll("#preview .thumb")).toHaveLength(0);
   });
@@ -606,6 +893,51 @@ describe("STEP進行画面", () => {
     const resultBox = document.getElementById("judge-result");
     expect(resultBox.className).toBe("ng");
     expect(resultBox.textContent).toContain("判定失敗");
+  });
+
+  it("判定APIの応答にchecks/reasonが無くてもクラッシュせず表示できる", async () => {
+    setupFetchMock([
+      ...buildStepCourseRoutes(["基準A"]),
+      { method: "POST", match: /\/api\/judge$/, handler: () => ({ body: { judgement: "NG" } }) },
+    ]);
+    await openCourse1();
+
+    const input = document.getElementById("screenshot-input");
+    const file = new File(["img"], "shot.png", { type: "image/png" });
+    Object.defineProperty(input, "files", { value: [file] });
+    input.dispatchEvent(new Event("change"));
+
+    document.getElementById("judge-button").click();
+    await flush(3);
+
+    const resultBox = document.getElementById("judge-result");
+    expect(resultBox.className).toBe("unknown");
+    expect(resultBox.textContent).toContain("一部未合格");
+    expect(resultBox.querySelector(".checks")).toBeNull();
+  });
+
+  it("判定APIのchecksにitemが無い項目があっても空欄表示でクラッシュしない", async () => {
+    setupFetchMock([
+      ...buildStepCourseRoutes(["基準A"]),
+      {
+        method: "POST",
+        match: /\/api\/judge$/,
+        handler: () => ({ body: { judgement: "OK", checks: [{ index: 0, passed: true }] } }),
+      },
+      { method: "POST", match: /\/api\/progress$/, handler: () => ({ body: { ok: true } }) },
+    ]);
+    await openCourse1();
+
+    const input = document.getElementById("screenshot-input");
+    const file = new File(["img"], "shot.png", { type: "image/png" });
+    Object.defineProperty(input, "files", { value: [file] });
+    input.dispatchEvent(new Event("change"));
+
+    document.getElementById("judge-button").click();
+    await flush(3);
+
+    const resultBox = document.getElementById("judge-result");
+    expect(resultBox.querySelector(".checks li").textContent).toContain("✅");
   });
 
   it("進捗保存(persistProgress)が失敗してもUIはブロックされない", async () => {
