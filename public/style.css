@@ -32,6 +32,12 @@ main {
 }
 .library-panel h2 { margin-top: 0; font-size: 16px; }
 
+#ai-provider-options { display: flex; gap: 20px; font-size: 14px; }
+#ai-provider-options label { cursor: pointer; }
+#ai-provider-options input:disabled { cursor: not-allowed; }
+.ai-provider-model { color: #6b7785; font-size: 12px; margin-left: 2px; }
+#ai-provider-note { color: #6b7785; font-size: 12px; margin: 8px 0 0; }
+
 #course-list { display: flex; flex-direction: column; gap: 10px; }
 .course-card {
   display: flex;
@@ -45,6 +51,7 @@ main {
 .course-card .meta { flex: 1; }
 .course-card .meta .name { font-weight: bold; }
 .course-card .meta .sub { font-size: 12px; color: #6b7785; margin-top: 2px; }
+.course-card .meta .info { font-size: 12px; color: #6b7785; margin-top: 2px; }
 .course-card .actions { display: flex; gap: 8px; flex-shrink: 0; }
 .course-card button {
   padding: 6px 12px;

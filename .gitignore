@@ -1,3 +1,6 @@
 node_modules/
 .env
 coverage/
+data/debug-last-course-response.*.txt
+data/progress.json
+data/courses/

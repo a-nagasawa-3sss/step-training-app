@@ -3,13 +3,19 @@
 // 実データ(data/配下)やGemini APIへの実際の通信を発生させずに全エンドポイント・分岐を検証する。
 jest.mock("fs", () => require("./mocks/fsMock"));
 jest.mock("@google/generative-ai", () => require("./mocks/genAiMock"));
+jest.mock("@anthropic-ai/sdk", () => require("./mocks/anthropicMock"));
+jest.mock("openai", () => require("./mocks/openAiMock"));
 
 const path = require("path");
 const request = require("supertest");
 const fsMock = require("./mocks/fsMock");
 const { mockGenerateContent } = require("./mocks/genAiMock");
+const { mockMessagesCreate } = require("./mocks/anthropicMock");
+const { mockChatCompletionsCreate } = require("./mocks/openAiMock");
 
 process.env.GEMINI_API_KEY = "test-api-key";
+process.env.ANTHROPIC_API_KEY = "test-claude-key";
+process.env.OPENAI_API_KEY = "test-openai-key";
 const app = require("../server");
 
 const DATA_DIR = fsMock.__DATA_DIR;
@@ -51,9 +57,34 @@ function validCourse(overrides = {}) {
   };
 }
 
+function claudeMessage(text, stopReason = "end_turn") {
+  return { content: [{ type: "text", text }], stop_reason: stopReason };
+}
+
+function openAiCompletion(text, finishReason = "stop") {
+  return { choices: [{ message: { content: text }, finish_reason: finishReason }] };
+}
+
 beforeEach(() => {
   fsMock.__store.clear();
   mockGenerateContent.mockReset();
+  mockMessagesCreate.mockReset();
+  mockChatCompletionsCreate.mockReset();
+});
+
+// ============================================================
+// GET /api/providers
+// ============================================================
+describe("GET /api/providers", () => {
+  it("各プロバイダーのキー設定状況とモデル名を返す", async () => {
+    const res = await request(app).get("/api/providers");
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      gemini: { available: true, model: "gemini-2.5-flash-lite" },
+      claude: { available: true, model: "claude-haiku-4-5" },
+      openai: { available: true, model: "gpt-5-mini" },
+    });
+  });
 });
 
 // ============================================================
@@ -135,9 +166,99 @@ describe("POST /api/courses/generate", () => {
       title: course.title,
       subtitle: course.subtitle,
       sourceFilename: "q.md",
+      aiProvider: "gemini",
+      aiModel: "gemini-2.5-flash-lite",
       builtin: false,
     });
     expect(JSON.parse(fsMock.__store.get(courseFilePath(res.body.id)))).toEqual(course);
+  });
+
+  it("デバッグ用レスポンスの保存に失敗してもコース生成自体は成功する", async () => {
+    const consoleErrorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+    const course = validCourse();
+    mockGenerateContent.mockResolvedValueOnce(geminiText(JSON.stringify(course)));
+    fsMock.writeFileSync.mockImplementationOnce(() => {
+      throw new Error("disk full");
+    });
+
+    const res = await request(app).post("/api/courses/generate").send({ markdown: "# 問題" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.title).toBe(course.title);
+    expect(consoleErrorSpy).toHaveBeenCalledWith("デバッグ用レスポンスの保存に失敗しました", expect.any(Error));
+  });
+
+  it("aiProvider=claudeの場合はClaude APIで生成する", async () => {
+    const course = validCourse();
+    mockMessagesCreate.mockResolvedValueOnce(claudeMessage(JSON.stringify(course)));
+
+    const res = await request(app)
+      .post("/api/courses/generate")
+      .send({ markdown: "# 問題", filename: "q.md", aiProvider: "claude" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.title).toBe(course.title);
+    expect(mockMessagesCreate).toHaveBeenCalledTimes(1);
+    expect(mockGenerateContent).not.toHaveBeenCalled();
+
+    const index = JSON.parse(fsMock.__store.get(COURSE_INDEX_PATH));
+    expect(index[0]).toMatchObject({ aiProvider: "claude", aiModel: "claude-haiku-4-5" });
+  });
+
+  it("Claudeの応答がmax_tokensで途中で切れた場合は500", async () => {
+    mockMessagesCreate.mockResolvedValueOnce(claudeMessage('{"title":"切れた応答"', "max_tokens"));
+
+    const res = await request(app)
+      .post("/api/courses/generate")
+      .send({ markdown: "# 問題", aiProvider: "claude" });
+
+    expect(res.status).toBe(500);
+    expect(res.body.error).toContain("出力上限に達し");
+  });
+
+  it("aiProvider=openaiの場合はOpenAI APIで生成する", async () => {
+    const course = validCourse();
+    mockChatCompletionsCreate.mockResolvedValueOnce(openAiCompletion(JSON.stringify(course)));
+
+    const res = await request(app)
+      .post("/api/courses/generate")
+      .send({ markdown: "# 問題", filename: "q.md", aiProvider: "openai" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.title).toBe(course.title);
+    expect(mockChatCompletionsCreate).toHaveBeenCalledTimes(1);
+    expect(mockGenerateContent).not.toHaveBeenCalled();
+    expect(mockMessagesCreate).not.toHaveBeenCalled();
+
+    const index = JSON.parse(fsMock.__store.get(COURSE_INDEX_PATH));
+    expect(index[0]).toMatchObject({ aiProvider: "openai", aiModel: "gpt-5-mini" });
+  });
+
+  it("OpenAIの応答がfinish_reason=lengthで途中で切れた場合は500", async () => {
+    mockChatCompletionsCreate.mockResolvedValueOnce(openAiCompletion('{"title":"切れた応答"', "length"));
+
+    const res = await request(app)
+      .post("/api/courses/generate")
+      .send({ markdown: "# 問題", aiProvider: "openai" });
+
+    expect(res.status).toBe(500);
+    expect(res.body.error).toContain("出力上限に達し");
+  });
+
+  it("OpenAIのinsufficient_quotaはリトライせず即座にエラーになり、請求設定への案内を表示する", async () => {
+    const quotaError = new Error(
+      "429 You exceeded your current quota, please check your plan and billing details."
+    );
+    quotaError.code = "insufficient_quota";
+    mockChatCompletionsCreate.mockRejectedValue(quotaError);
+
+    const res = await request(app)
+      .post("/api/courses/generate")
+      .send({ markdown: "# 問題", aiProvider: "openai" });
+
+    expect(res.status).toBe(500);
+    expect(res.body.error).toContain("billing");
+    expect(mockChatCompletionsCreate).toHaveBeenCalledTimes(1); // リトライされない
   });
 
   it("```json フェンス付きの応答もJSONとして解釈できる", async () => {
@@ -147,6 +268,43 @@ describe("POST /api/courses/generate", () => {
     const res = await request(app).post("/api/courses/generate").send({ markdown: "# 問題" });
     expect(res.status).toBe(200);
     expect(res.body.title).toBe(course.title);
+  });
+
+  it("文字列内に生の改行が混在していてもJSONとして解釈できる(コードブロック転記時の典型パターン)", async () => {
+    const course = validCourse({
+      steps: [
+        {
+          ...validCourse().steps[0],
+          detailHtml: '<pre><code>line1\nline2\nline3</code></pre>',
+        },
+      ],
+    });
+    // JSON.stringifyは\nを正しくエスケープするため、生の改行を再現するために手動で文字列化する
+    const broken = JSON.stringify(course).replace(/\\n/g, "\n");
+    mockGenerateContent.mockResolvedValueOnce(geminiText(broken));
+
+    const res = await request(app).post("/api/courses/generate").send({ markdown: "# 問題" });
+    expect(res.status).toBe(200);
+    expect(res.body.title).toBe(course.title);
+  });
+
+  it("文字列内のバックスラッシュやエスケープ済み引用符が混在していてもJSONとして解釈できる(Windowsパス等)", async () => {
+    const course = validCourse({
+      steps: [
+        {
+          ...validCourse().steps[0],
+          detailHtml: '<pre><code>C:\\Users\\test\\"file".txt</code></pre>',
+        },
+      ],
+    });
+    mockGenerateContent.mockResolvedValueOnce(geminiText(JSON.stringify(course)));
+
+    const res = await request(app).post("/api/courses/generate").send({ markdown: "# 問題" });
+    expect(res.status).toBe(200);
+    expect(res.body.title).toBe(course.title);
+
+    const saved = JSON.parse(fsMock.__store.get(courseFilePath(res.body.id)));
+    expect(saved.steps[0].detailHtml).toBe(course.steps[0].detailHtml);
   });
 
   it("Geminiの呼び出しが失敗(リトライ対象外)した場合は500", async () => {
@@ -250,7 +408,13 @@ describe("POST /api/courses/:id/regenerate", () => {
     expect(res.body.title).toBe("新title");
 
     const index = JSON.parse(fsMock.__store.get(COURSE_INDEX_PATH));
-    expect(index[0]).toMatchObject({ title: "新title", subtitle: "新sub", sourceFilename: "new.md" });
+    expect(index[0]).toMatchObject({
+      title: "新title",
+      subtitle: "新sub",
+      sourceFilename: "new.md",
+      aiProvider: "gemini",
+      aiModel: "gemini-2.5-flash-lite",
+    });
     expect(index[0].updatedAt).toBeDefined();
 
     const progress = JSON.parse(fsMock.__store.get(PROGRESS_PATH));
@@ -524,6 +688,60 @@ describe("POST /api/judge", () => {
     expect(res.body.judgement).toBe("OK");
     expect(mockGenerateContent).toHaveBeenCalledTimes(2);
   }, 10000);
+
+  it("aiProvider=claudeの場合はClaude APIで判定する", async () => {
+    seedCourse("abc", validCourse());
+    mockMessagesCreate.mockResolvedValueOnce(
+      claudeMessage(
+        JSON.stringify({
+          reason: "OK",
+          checks: [
+            { index: 0, item: "基準1", passed: true },
+            { index: 1, item: "基準2", passed: true },
+          ],
+        })
+      )
+    );
+
+    const res = await request(app)
+      .post("/api/judge")
+      .field("courseId", "abc")
+      .field("stepId", "1")
+      .field("aiProvider", "claude")
+      .attach("screenshots", Buffer.from("fake-image"), "shot.png");
+
+    expect(res.status).toBe(200);
+    expect(res.body.judgement).toBe("OK");
+    expect(mockMessagesCreate).toHaveBeenCalledTimes(1);
+    expect(mockGenerateContent).not.toHaveBeenCalled();
+  });
+
+  it("aiProvider=openaiの場合はOpenAI APIで判定する", async () => {
+    seedCourse("abc", validCourse());
+    mockChatCompletionsCreate.mockResolvedValueOnce(
+      openAiCompletion(
+        JSON.stringify({
+          reason: "OK",
+          checks: [
+            { index: 0, item: "基準1", passed: true },
+            { index: 1, item: "基準2", passed: true },
+          ],
+        })
+      )
+    );
+
+    const res = await request(app)
+      .post("/api/judge")
+      .field("courseId", "abc")
+      .field("stepId", "1")
+      .field("aiProvider", "openai")
+      .attach("screenshots", Buffer.from("fake-image"), "shot.png");
+
+    expect(res.status).toBe(200);
+    expect(res.body.judgement).toBe("OK");
+    expect(mockChatCompletionsCreate).toHaveBeenCalledTimes(1);
+    expect(mockGenerateContent).not.toHaveBeenCalled();
+  });
 
   it("複数枚のスクリーンショットを送信できる", async () => {
     seedCourse("abc", validCourse());
