@@ -106,7 +106,7 @@
 
    ```
    cd C:\work
-   git clone https://github.com/a-nagasawa-3sss/step-training-app.git
+   git clone -b main https://github.com/a-nagasawa-3sss/step-training-app.git
    ```
 
    `C:\work\step-training-app` フォルダが作成されれば成功です。続けて、そのフォルダに移動します。
