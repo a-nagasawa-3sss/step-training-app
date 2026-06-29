@@ -50,11 +50,20 @@ function loadApp() {
   return require(APP_JS_PATH);
 }
 
+// jsdomはEventSourceを実装していないため、生成中の進捗イベントは送らない最小限のモックで代替する。
+// （onGenerateClickがnew EventSource()を呼ぶだけでテストが落ちないようにするためのスタブ）
+class EventSourceMock {
+  close() {}
+}
+
 beforeEach(() => {
   window.URL.createObjectURL = jest.fn(() => "blob:mock-url");
   window.confirm = jest.fn(() => true);
   window.alert = jest.fn();
   window.localStorage.clear();
+  global.EventSource = EventSourceMock;
+  // jsdomはwindow.scrollToを実装していないため、画面遷移時の先頭スクロール呼び出しをスタブ化する
+  window.scrollTo = jest.fn();
 });
 
 afterEach(() => {
@@ -693,16 +702,13 @@ describe("STEP進行画面", () => {
   it("次へ/前へボタンでSTEPを移動した際にページ最上部へスクロールする", async () => {
     setupFetchMock(buildStepCourseRoutes());
     await openCourse1();
-
-    const scrollToSpy = jest.spyOn(window, "scrollTo").mockImplementation(() => {});
+    window.scrollTo.mockClear(); // openCourse自体のスクロール呼び出しを除外する
 
     document.getElementById("next-button").click();
-    expect(scrollToSpy).toHaveBeenCalledWith(0, 0);
+    expect(window.scrollTo).toHaveBeenCalledWith(0, 0);
 
     document.getElementById("prev-button").click();
-    expect(scrollToSpy).toHaveBeenCalledWith(0, 0);
-
-    scrollToSpy.mockRestore();
+    expect(window.scrollTo).toHaveBeenCalledWith(0, 0);
   });
 
   it("ナビゲーションボタンクリックでも該当STEPに移動する", async () => {
@@ -722,6 +728,29 @@ describe("STEP進行画面", () => {
 
     expect(document.getElementById("library-screen").style.display).toBe("flex");
     expect(document.getElementById("course-screen").style.display).toBe("none");
+  });
+
+  it("問題一覧からコース画面を開いた際にページ最上部へスクロールする", async () => {
+    setupFetchMock(buildStepCourseRoutes());
+    loadApp();
+    await flush(2);
+    window.scrollTo.mockClear();
+
+    document.querySelector(".start-button").click();
+    await flush(2);
+
+    expect(window.scrollTo).toHaveBeenCalledWith(0, 0);
+  });
+
+  it("戻るボタンでライブラリ画面に戻った際にページ最上部へスクロールする", async () => {
+    setupFetchMock(buildStepCourseRoutes());
+    await openCourse1();
+    window.scrollTo.mockClear();
+
+    document.getElementById("back-to-library-button").click();
+    await flush(2);
+
+    expect(window.scrollTo).toHaveBeenCalledWith(0, 0);
   });
 
   it("ファイルを選択するとプレビューに表示され、削除ボタンで取り除ける", async () => {

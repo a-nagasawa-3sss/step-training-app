@@ -1,6 +1,10 @@
 // server.js の単体試験。
-// fs と @google/generative-ai は test/mocks 配下のモジュールでモック化し、
-// 実データ(data/配下)やGemini APIへの実際の通信を発生させずに全エンドポイント・分岐を検証する。
+// 各コンポーネント(lib/*)の処理ロジック自体はtest/lib/配下で個別に検証済みのため、
+// ここではエンドポイントの配線（ルーティング・入力検証・各コンポーネントの呼び出し結果の
+// レスポンスへの反映・ファイル一覧/進捗の更新)に範囲を絞って検証する。
+//
+// fs と @google/generative-ai 等は test/mocks 配下のモジュールでモック化し、
+// 実データ(data/配下)やAPIへの実際の通信を発生させずに検証する。
 jest.mock("fs", () => require("./mocks/fsMock"));
 jest.mock("@google/generative-ai", () => require("./mocks/genAiMock"));
 jest.mock("@anthropic-ai/sdk", () => require("./mocks/anthropicMock"));
@@ -59,10 +63,6 @@ function validCourse(overrides = {}) {
 
 function claudeMessage(text, stopReason = "end_turn") {
   return { content: [{ type: "text", text }], stop_reason: stopReason };
-}
-
-function openAiCompletion(text, finishReason = "stop") {
-  return { choices: [{ message: { content: text }, finish_reason: finishReason }] };
 }
 
 beforeEach(() => {
@@ -134,6 +134,8 @@ describe("GET /api/courses/:id", () => {
 
 // ============================================================
 // POST /api/courses/generate
+//   個々のAIプロバイダー分岐・JSON解釈・スキーマ検証はlib/courseGenerator.test.jsで検証済み。
+//   ここではエンドポイントとしての入力検証・コース保存・一覧更新の配線のみを確認する。
 // ============================================================
 describe("POST /api/courses/generate", () => {
   it("markdownが無い場合は400", async () => {
@@ -146,7 +148,7 @@ describe("POST /api/courses/generate", () => {
     expect(res.status).toBe(400);
   });
 
-  it("Geminiの応答からコースを生成し一覧に追加する", async () => {
+  it("生成したコースを保存し、一覧にメタ情報を追加する", async () => {
     const course = validCourse();
     mockGenerateContent.mockResolvedValueOnce(geminiText(JSON.stringify(course)));
 
@@ -173,198 +175,24 @@ describe("POST /api/courses/generate", () => {
     expect(JSON.parse(fsMock.__store.get(courseFilePath(res.body.id)))).toEqual(course);
   });
 
-  it("デバッグ用レスポンスの保存に失敗してもコース生成自体は成功する", async () => {
-    const consoleErrorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
-    const course = validCourse();
-    mockGenerateContent.mockResolvedValueOnce(geminiText(JSON.stringify(course)));
-    fsMock.writeFileSync.mockImplementationOnce(() => {
-      throw new Error("disk full");
-    });
-
-    const res = await request(app).post("/api/courses/generate").send({ markdown: "# 問題" });
-
-    expect(res.status).toBe(200);
-    expect(res.body.title).toBe(course.title);
-    expect(consoleErrorSpy).toHaveBeenCalledWith("デバッグ用レスポンスの保存に失敗しました", expect.any(Error));
-  });
-
-  it("aiProvider=claudeの場合はClaude APIで生成する", async () => {
+  it("aiProviderを指定すると一覧のメタ情報にも反映される", async () => {
     const course = validCourse();
     mockMessagesCreate.mockResolvedValueOnce(claudeMessage(JSON.stringify(course)));
 
     const res = await request(app)
       .post("/api/courses/generate")
-      .send({ markdown: "# 問題", filename: "q.md", aiProvider: "claude" });
+      .send({ markdown: "# 問題", aiProvider: "claude" });
 
     expect(res.status).toBe(200);
-    expect(res.body.title).toBe(course.title);
-    expect(mockMessagesCreate).toHaveBeenCalledTimes(1);
-    expect(mockGenerateContent).not.toHaveBeenCalled();
-
     const index = JSON.parse(fsMock.__store.get(COURSE_INDEX_PATH));
     expect(index[0]).toMatchObject({ aiProvider: "claude", aiModel: "claude-haiku-4-5" });
   });
 
-  it("Claudeの応答がmax_tokensで途中で切れた場合は500", async () => {
-    mockMessagesCreate.mockResolvedValueOnce(claudeMessage('{"title":"切れた応答"', "max_tokens"));
-
-    const res = await request(app)
-      .post("/api/courses/generate")
-      .send({ markdown: "# 問題", aiProvider: "claude" });
-
-    expect(res.status).toBe(500);
-    expect(res.body.error).toContain("出力上限に達し");
-  });
-
-  it("aiProvider=openaiの場合はOpenAI APIで生成する", async () => {
-    const course = validCourse();
-    mockChatCompletionsCreate.mockResolvedValueOnce(openAiCompletion(JSON.stringify(course)));
-
-    const res = await request(app)
-      .post("/api/courses/generate")
-      .send({ markdown: "# 問題", filename: "q.md", aiProvider: "openai" });
-
-    expect(res.status).toBe(200);
-    expect(res.body.title).toBe(course.title);
-    expect(mockChatCompletionsCreate).toHaveBeenCalledTimes(1);
-    expect(mockGenerateContent).not.toHaveBeenCalled();
-    expect(mockMessagesCreate).not.toHaveBeenCalled();
-
-    const index = JSON.parse(fsMock.__store.get(COURSE_INDEX_PATH));
-    expect(index[0]).toMatchObject({ aiProvider: "openai", aiModel: "gpt-5-mini" });
-  });
-
-  it("OpenAIの応答がfinish_reason=lengthで途中で切れた場合は500", async () => {
-    mockChatCompletionsCreate.mockResolvedValueOnce(openAiCompletion('{"title":"切れた応答"', "length"));
-
-    const res = await request(app)
-      .post("/api/courses/generate")
-      .send({ markdown: "# 問題", aiProvider: "openai" });
-
-    expect(res.status).toBe(500);
-    expect(res.body.error).toContain("出力上限に達し");
-  });
-
-  it("OpenAIのinsufficient_quotaはリトライせず即座にエラーになり、請求設定への案内を表示する", async () => {
-    const quotaError = new Error(
-      "429 You exceeded your current quota, please check your plan and billing details."
-    );
-    quotaError.code = "insufficient_quota";
-    mockChatCompletionsCreate.mockRejectedValue(quotaError);
-
-    const res = await request(app)
-      .post("/api/courses/generate")
-      .send({ markdown: "# 問題", aiProvider: "openai" });
-
-    expect(res.status).toBe(500);
-    expect(res.body.error).toContain("billing");
-    expect(mockChatCompletionsCreate).toHaveBeenCalledTimes(1); // リトライされない
-  });
-
-  it("```json フェンス付きの応答もJSONとして解釈できる", async () => {
-    const course = validCourse();
-    mockGenerateContent.mockResolvedValueOnce(geminiText("```json\n" + JSON.stringify(course) + "\n```"));
-
-    const res = await request(app).post("/api/courses/generate").send({ markdown: "# 問題" });
-    expect(res.status).toBe(200);
-    expect(res.body.title).toBe(course.title);
-  });
-
-  it("文字列内に生の改行が混在していてもJSONとして解釈できる(コードブロック転記時の典型パターン)", async () => {
-    const course = validCourse({
-      steps: [
-        {
-          ...validCourse().steps[0],
-          detailHtml: '<pre><code>line1\nline2\nline3</code></pre>',
-        },
-      ],
-    });
-    // JSON.stringifyは\nを正しくエスケープするため、生の改行を再現するために手動で文字列化する
-    const broken = JSON.stringify(course).replace(/\\n/g, "\n");
-    mockGenerateContent.mockResolvedValueOnce(geminiText(broken));
-
-    const res = await request(app).post("/api/courses/generate").send({ markdown: "# 問題" });
-    expect(res.status).toBe(200);
-    expect(res.body.title).toBe(course.title);
-  });
-
-  it("文字列内のバックスラッシュやエスケープ済み引用符が混在していてもJSONとして解釈できる(Windowsパス等)", async () => {
-    const course = validCourse({
-      steps: [
-        {
-          ...validCourse().steps[0],
-          detailHtml: '<pre><code>C:\\Users\\test\\"file".txt</code></pre>',
-        },
-      ],
-    });
-    mockGenerateContent.mockResolvedValueOnce(geminiText(JSON.stringify(course)));
-
-    const res = await request(app).post("/api/courses/generate").send({ markdown: "# 問題" });
-    expect(res.status).toBe(200);
-    expect(res.body.title).toBe(course.title);
-
-    const saved = JSON.parse(fsMock.__store.get(courseFilePath(res.body.id)));
-    expect(saved.steps[0].detailHtml).toBe(course.steps[0].detailHtml);
-  });
-
-  it("Geminiの呼び出しが失敗(リトライ対象外)した場合は500", async () => {
+  it("コース生成に失敗した場合は500とエラーメッセージを返す", async () => {
     mockGenerateContent.mockRejectedValueOnce(new Error("APIキーが不正です"));
     const res = await request(app).post("/api/courses/generate").send({ markdown: "# 問題" });
     expect(res.status).toBe(500);
     expect(res.body.error).toContain("コースの生成に失敗しました");
-  });
-
-  it("応答がJSONとして解釈できない場合は500", async () => {
-    mockGenerateContent.mockResolvedValueOnce(geminiText("これはJSONではありません"));
-    const res = await request(app).post("/api/courses/generate").send({ markdown: "# 問題" });
-    expect(res.status).toBe(500);
-    expect(res.body.error).toContain("JSONとして解釈できませんでした");
-  });
-
-  const invalidCourseCases = [
-    ["オブジェクトでない", "not an object", "JSONオブジェクトではありません"],
-    ["titleが不正", validCourse({ title: "" }), "title が不正です"],
-    ["subtitleが不正", validCourse({ subtitle: 123 }), "subtitle が不正です"],
-    ["stepsが空", validCourse({ steps: [] }), "steps が空です"],
-    [
-      "step.idが不正",
-      validCourse({ steps: [{ ...validCourse().steps[0], id: "1" }] }),
-      "steps[0].id が不正です",
-    ],
-    [
-      "step.titleが不正",
-      validCourse({ steps: [{ ...validCourse().steps[0], title: "" }] }),
-      "steps[0].title が不正です",
-    ],
-    [
-      "step.goalHtmlが不正",
-      validCourse({ steps: [{ ...validCourse().steps[0], goalHtml: undefined }] }),
-      "steps[0].goalHtml が不正です",
-    ],
-    [
-      "step.detailHtmlが不正",
-      validCourse({ steps: [{ ...validCourse().steps[0], detailHtml: undefined }] }),
-      "steps[0].detailHtml が不正です",
-    ],
-    [
-      "checkpoint.instructionが不正",
-      validCourse({ steps: [{ ...validCourse().steps[0], checkpoint: { criteria: ["x"] } }] }),
-      "steps[0].checkpoint.instruction が不正です",
-    ],
-    [
-      "checkpoint.criteriaが空",
-      validCourse({
-        steps: [{ ...validCourse().steps[0], checkpoint: { instruction: "i", criteria: [] } }],
-      }),
-      "steps[0].checkpoint.criteria が不正です",
-    ],
-  ];
-
-  it.each(invalidCourseCases)("スキーマ不正(%s)は500", async (_label, invalidCourse, expectedMessage) => {
-    mockGenerateContent.mockResolvedValueOnce(geminiText(JSON.stringify(invalidCourse)));
-    const res = await request(app).post("/api/courses/generate").send({ markdown: "# 問題" });
-    expect(res.status).toBe(500);
-    expect(res.body.error).toContain(expectedMessage);
   });
 });
 
@@ -432,7 +260,7 @@ describe("POST /api/courses/:id/regenerate", () => {
     expect(index[0].sourceFilename).toBe("old.md");
   });
 
-  it("Geminiが失敗した場合は500", async () => {
+  it("コース生成に失敗した場合は500", async () => {
     seedIndex([{ id: "abc", title: "旧", builtin: false }]);
     mockGenerateContent.mockRejectedValueOnce(new Error("失敗"));
     const res = await request(app).post("/api/courses/abc/regenerate").send({ markdown: "# 問題" });
@@ -498,15 +326,6 @@ describe("GET /api/progress/:courseId", () => {
     const res = await request(app).get("/api/progress/abc");
     expect(res.body).toEqual({ 1: [true, false] });
   });
-
-  it("旧フラット形式は組み込みコース扱いに自動移行される", async () => {
-    fsMock.__store.set(PROGRESS_PATH, JSON.stringify({ 1: [true, false] }));
-    const res = await request(app).get(`/api/progress/${DEFAULT_COURSE_ID}`);
-    expect(res.body).toEqual({ 1: [true, false] });
-
-    const migrated = JSON.parse(fsMock.__store.get(PROGRESS_PATH));
-    expect(migrated).toEqual({ [DEFAULT_COURSE_ID]: { 1: [true, false] } });
-  });
 });
 
 describe("POST /api/progress", () => {
@@ -534,6 +353,8 @@ describe("POST /api/progress", () => {
 
 // ============================================================
 // POST /api/judge
+//   判定基準の絞り込み・合否算出ロジック自体はlib/judge.test.jsで検証済み。
+//   ここではエンドポイントとしての入力検証・lib/judgeの呼び出し結果の反映のみを確認する。
 // ============================================================
 describe("POST /api/judge", () => {
   it("不正なcourseId/stepIdは400", async () => {
@@ -554,7 +375,7 @@ describe("POST /api/judge", () => {
     expect(mockGenerateContent).not.toHaveBeenCalled();
   });
 
-  it("criteriaIndices未指定なら全項目を判定対象にする", async () => {
+  it("判定に成功した場合は結果をそのままレスポンスに反映する", async () => {
     seedCourse("abc", validCourse());
     mockGenerateContent.mockResolvedValueOnce(
       geminiText(
@@ -582,80 +403,7 @@ describe("POST /api/judge", () => {
     ]);
   });
 
-  it("criteriaIndicesで指定した項目だけを判定対象にする", async () => {
-    seedCourse("abc", validCourse());
-    mockGenerateContent.mockResolvedValueOnce(
-      geminiText(JSON.stringify({ reason: "OK", checks: [{ index: 1, item: "基準2", passed: true }] }))
-    );
-
-    const res = await request(app)
-      .post("/api/judge")
-      .field("courseId", "abc")
-      .field("stepId", "1")
-      .field("criteriaIndices", JSON.stringify([1]))
-      .attach("screenshots", Buffer.from("fake-image"), "shot.png");
-
-    expect(res.status).toBe(200);
-    expect(res.body.checks).toEqual([{ index: 1, item: "基準2", passed: true }]);
-    expect(res.body.judgement).toBe("OK");
-  });
-
-  it("criteriaIndicesが範囲外の値のみの場合はGeminiを呼ばずに判定済み扱いとする", async () => {
-    seedCourse("abc", validCourse());
-    const res = await request(app)
-      .post("/api/judge")
-      .field("courseId", "abc")
-      .field("stepId", "1")
-      .field("criteriaIndices", JSON.stringify([99]))
-      .attach("screenshots", Buffer.from("fake-image"), "shot.png");
-
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual({ judgement: "OK", reason: expect.any(String), checks: [] });
-    expect(mockGenerateContent).not.toHaveBeenCalled();
-  });
-
-  it("criteriaIndicesが不正なJSONの場合は全項目を対象にフォールバックする", async () => {
-    seedCourse("abc", validCourse());
-    mockGenerateContent.mockResolvedValueOnce(
-      geminiText(
-        JSON.stringify({
-          reason: "OK",
-          checks: [
-            { index: 0, item: "基準1", passed: true },
-            { index: 1, item: "基準2", passed: true },
-          ],
-        })
-      )
-    );
-
-    const res = await request(app)
-      .post("/api/judge")
-      .field("courseId", "abc")
-      .field("stepId", "1")
-      .field("criteriaIndices", "not-json")
-      .attach("screenshots", Buffer.from("fake-image"), "shot.png");
-
-    expect(res.status).toBe(200);
-    expect(res.body.checks).toHaveLength(2);
-  });
-
-  it("Geminiの応答がJSONでない場合は全項目NGとして処理を継続する", async () => {
-    seedCourse("abc", validCourse());
-    mockGenerateContent.mockResolvedValueOnce(geminiText("判定できませんでした(JSONではない)"));
-
-    const res = await request(app)
-      .post("/api/judge")
-      .field("courseId", "abc")
-      .field("stepId", "1")
-      .attach("screenshots", Buffer.from("fake-image"), "shot.png");
-
-    expect(res.status).toBe(200);
-    expect(res.body.judgement).toBe("NG");
-    expect(res.body.checks.every((c) => c.passed === false)).toBe(true);
-    expect(res.body.reason).toContain("判定できませんでした");
-  });
-
-  it("Gemini呼び出しが失敗(リトライ対象外)した場合は500", async () => {
+  it("AI呼び出しが失敗した場合は500とプロバイダー名入りのエラーメッセージを返す", async () => {
     seedCourse("abc", validCourse());
     mockGenerateContent.mockRejectedValueOnce(new Error("呼び出し失敗"));
 
@@ -667,97 +415,6 @@ describe("POST /api/judge", () => {
 
     expect(res.status).toBe(500);
     expect(res.body.error).toContain("Gemini API の呼び出しに失敗しました");
-  });
-
-  it("一時的な503エラーはリトライ後に成功する", async () => {
-    seedCourse("abc", validCourse());
-    const retryableError = new Error("[503 Service Unavailable] busy");
-    mockGenerateContent
-      .mockRejectedValueOnce(retryableError)
-      .mockResolvedValueOnce(
-        geminiText(JSON.stringify({ reason: "OK", checks: [{ index: 0, item: "基準1", passed: true }, { index: 1, item: "基準2", passed: true }] }))
-      );
-
-    const res = await request(app)
-      .post("/api/judge")
-      .field("courseId", "abc")
-      .field("stepId", "1")
-      .attach("screenshots", Buffer.from("fake-image"), "shot.png");
-
-    expect(res.status).toBe(200);
-    expect(res.body.judgement).toBe("OK");
-    expect(mockGenerateContent).toHaveBeenCalledTimes(2);
-  }, 10000);
-
-  it("aiProvider=claudeの場合はClaude APIで判定する", async () => {
-    seedCourse("abc", validCourse());
-    mockMessagesCreate.mockResolvedValueOnce(
-      claudeMessage(
-        JSON.stringify({
-          reason: "OK",
-          checks: [
-            { index: 0, item: "基準1", passed: true },
-            { index: 1, item: "基準2", passed: true },
-          ],
-        })
-      )
-    );
-
-    const res = await request(app)
-      .post("/api/judge")
-      .field("courseId", "abc")
-      .field("stepId", "1")
-      .field("aiProvider", "claude")
-      .attach("screenshots", Buffer.from("fake-image"), "shot.png");
-
-    expect(res.status).toBe(200);
-    expect(res.body.judgement).toBe("OK");
-    expect(mockMessagesCreate).toHaveBeenCalledTimes(1);
-    expect(mockGenerateContent).not.toHaveBeenCalled();
-  });
-
-  it("aiProvider=openaiの場合はOpenAI APIで判定する", async () => {
-    seedCourse("abc", validCourse());
-    mockChatCompletionsCreate.mockResolvedValueOnce(
-      openAiCompletion(
-        JSON.stringify({
-          reason: "OK",
-          checks: [
-            { index: 0, item: "基準1", passed: true },
-            { index: 1, item: "基準2", passed: true },
-          ],
-        })
-      )
-    );
-
-    const res = await request(app)
-      .post("/api/judge")
-      .field("courseId", "abc")
-      .field("stepId", "1")
-      .field("aiProvider", "openai")
-      .attach("screenshots", Buffer.from("fake-image"), "shot.png");
-
-    expect(res.status).toBe(200);
-    expect(res.body.judgement).toBe("OK");
-    expect(mockChatCompletionsCreate).toHaveBeenCalledTimes(1);
-    expect(mockGenerateContent).not.toHaveBeenCalled();
-  });
-
-  it("複数枚のスクリーンショットを送信できる", async () => {
-    seedCourse("abc", validCourse());
-    mockGenerateContent.mockResolvedValueOnce(
-      geminiText(JSON.stringify({ reason: "OK", checks: [{ index: 0, item: "基準1", passed: true }, { index: 1, item: "基準2", passed: true }] }))
-    );
-
-    const res = await request(app)
-      .post("/api/judge")
-      .field("courseId", "abc")
-      .field("stepId", "1")
-      .attach("screenshots", Buffer.from("img1"), "shot1.png")
-      .attach("screenshots", Buffer.from("img2"), "shot2.png");
-
-    expect(res.status).toBe(200);
-    expect(res.body.judgement).toBe("OK");
   });
 });
 

@@ -29,7 +29,8 @@
         "displayName": "server",
         "testEnvironment": "node",
         "testMatch": [
-          "<rootDir>/test/server*.test.js"
+          "<rootDir>/test/server*.test.js",
+          "<rootDir>/test/lib/**/*.test.js"
         ]
       },
       {
@@ -42,6 +43,7 @@
     ],
     "collectCoverageFrom": [
       "server.js",
+      "lib/**/*.js",
       "public/app.js"
     ]
   }

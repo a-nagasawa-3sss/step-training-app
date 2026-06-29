@@ -111,6 +111,7 @@ async function showLibraryScreen() {
   document.getElementById("header-subtitle").textContent = "";
   document.getElementById("course-screen").style.display = "none";
   document.getElementById("library-screen").style.display = "flex";
+  window.scrollTo(0, 0);
   await loadCourseList();
 }
 
@@ -223,10 +224,40 @@ function onMdFileSelected(e) {
   reader.readAsText(file, "utf-8");
 }
 
+// コース生成の進捗段階。サーバーから来るstage名と表示ラベルの対応表。
+// "問題作成"はAI呼び出しそのもの（最大8分）なので、3つの中で唯一時間がかかる段階になる。
+const GENERATE_PROGRESS_STAGES = [
+  { stage: "md_loaded", label: "mdデータの読み込み" },
+  { stage: "ai_generated", label: "問題作成" },
+  { stage: "json_saved", label: "jsonファイルでの出力" },
+];
+
+/** 進捗リストを「すべて未完了」の状態で描画し直す */
+function resetGenerateProgressList() {
+  const list = document.getElementById("generate-progress-list");
+  list.innerHTML = "";
+  for (const { stage, label } of GENERATE_PROGRESS_STAGES) {
+    const li = document.createElement("li");
+    li.id = `generate-progress-${stage}`;
+    li.textContent = label;
+    list.appendChild(li);
+  }
+}
+
+/** 指定stageの行を完了表示にする */
+function markGenerateProgressDone(stage) {
+  const li = document.getElementById(`generate-progress-${stage}`);
+  if (li) li.classList.add("done");
+}
+
 /**
  * 「Geminiでこの問題を生成する」ボタンの処理。
  * regenerateTargetIdが設定されていれば既存コースへの再生成（確認ダイアログ＋進捗リセット）、
  * そうでなければ新規コースの生成として、それぞれ別のエンドポイントを呼び分ける。
+ *
+ * 生成本体（POST）は処理完了まで結果が返らないため、別チャンネル（GET、EventSource）で
+ * jobIdに紐づく進捗イベント（mdの読み込み/問題作成/json出力の完了）だけを受け取り、
+ * 画面の途中経過表示に反映する。
  */
 async function onGenerateClick() {
   const statusBox = document.getElementById("generate-status");
@@ -245,16 +276,29 @@ async function onGenerateClick() {
   generateButton.disabled = true;
   statusBox.className = "";
   statusBox.textContent = `${AI_PROVIDER_LABEL[selectedAiProvider]}で問題を生成中です。しばらくお待ちください...`;
+  resetGenerateProgressList();
 
   const url = regenerateTargetId
     ? `/api/courses/${regenerateTargetId}/regenerate`
     : "/api/courses/generate";
 
+  const jobId = crypto.randomUUID();
+  const progressSource = new EventSource(`/api/courses/generate-progress/${jobId}`);
+  progressSource.onmessage = (event) => {
+    const { stage } = JSON.parse(event.data);
+    markGenerateProgressDone(stage);
+  };
+
   try {
     const res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ markdown: mdText, filename: mdFilename, aiProvider: selectedAiProvider }),
+      body: JSON.stringify({
+        markdown: mdText,
+        filename: mdFilename,
+        aiProvider: selectedAiProvider,
+        jobId,
+      }),
     });
     const data = await res.json();
 
@@ -283,6 +327,7 @@ async function onGenerateClick() {
     statusBox.className = "ng";
     statusBox.textContent = `通信エラー：${err.message}`;
   } finally {
+    progressSource.close();
     // 生成済み(or失敗後)はファイル未選択の状態に戻るため、ボタンは無効のままにする
     generateButton.disabled = true;
   }
@@ -326,6 +371,7 @@ async function openCourse(courseId) {
   document.getElementById("header-subtitle").textContent = `${courseData.title} ${courseData.subtitle ? "／ " + courseData.subtitle : ""}`;
   document.getElementById("library-screen").style.display = "none";
   document.getElementById("course-screen").style.display = "block";
+  window.scrollTo(0, 0);
 
   renderNav();
   renderStep(0);
